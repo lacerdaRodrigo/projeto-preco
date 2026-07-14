@@ -8,6 +8,7 @@ from domain.dinheiro import ZERO, dinheiro
 from domain.oferta import OfertaBruta
 from domain.preco_final import calcular_preco_final
 from domain.produto import Produto
+from domain.referencia import ReferenciaProduto
 from domain.sku import SKU, SnapshotPreco
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "ZERO",
     "OfertaBruta",
     "Produto",
+    "ReferenciaProduto",
     "SnapshotPreco",
     "calcular_preco_final",
     "dinheiro",

@@ -37,3 +37,8 @@ python3 -m venv .venv
 ## Convenções de trabalho
 - Docs enxutos: histórico/PRs/mudanças ficam no git, **não** em `.md`. Ver [[docs-enxutos-git-nao-md]].
 - Começar pela fatia vertical da V1: 1 produto → 2 lojas → matching → preço final → histórico → CLI.
+
+## Entrada = título do produto (decisão firme)
+- **A entrada principal é o TÍTULO** que o Rodrigo cola (ex.: "Smartphone Motorola Moto G67 5G 256GB..."). Ele já pesquisa no Google e traz o **modelo específico**; o sistema extrai o que importa (marca, modelo/part-number, atributos-chave) e busca por isso. Plano detalhado em `plano.md`.
+- **Sem consultas vagas nem rota de descoberta** ("mesa 06 cadeiras", "notebook bom e barato"): o roteador é só uma **guarda de especificidade** — título vago → pede um específico, não inventa busca. Divisão de responsabilidade: o Rodrigo garante o dado de entrada; o sistema extrai e busca.
+- **Extrator por URL/página fica PARQUEADO (off), não apagar.** Ler o JSON-LD do link funciona em lojas que expõem dado estruturado, mas as grandes (Mercado Livre, Magazine Luiza) bloqueiam a leitura (desafio/403). Código mantido em `adapters/extratores/pagina.py` pra uso futuro; quando só houver a URL, o **slug** vira título (`extrair_do_slug`). Quem enfrenta o anti-bot das lojas é o coletor Serper na etapa de busca, não a gente.

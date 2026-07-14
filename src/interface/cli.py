@@ -12,6 +12,7 @@ Uso:
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from typing import Optional
 
 import typer
@@ -22,6 +23,7 @@ from adapters.coletores.google_shopping import ColetorGoogleShopping
 from adapters.coletores.kabum import ColetorKabum
 from adapters.coletores.sandbox import ColetorSandbox
 from adapters.coletores.vtex import lojas_vtex_padrao
+from adapters.extratores import LeitorDePagina, extrair_do_slug, extrair_do_titulo
 from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
@@ -35,7 +37,7 @@ from application.buscar_produto import (
 )
 from application.coletores import Coletor
 from config import Config, carregar_config
-from domain import Produto
+from domain import Produto, ReferenciaProduto
 
 # V1: uma conta fixa (eu + noiva vêm no V6; o gancho conta_id já existe). RN16.
 CONTA_PADRAO = 1
@@ -91,6 +93,84 @@ def cadastrar(
     console.print(
         f"[green]✓[/] Produto cadastrado: [bold]{produto.nome}[/] "
         f"(id [cyan]{produto.id}[/])"
+    )
+
+
+@app.command()
+def rastrear(
+    url: Optional[str] = typer.Argument(
+        None, help="URL do produto que você achou no Google (caminho principal)."
+    ),
+    titulo: Optional[str] = typer.Option(
+        None, "--titulo", "-t", help="Fallback: cole o título quando não tiver/ler a URL."
+    ),
+    categoria: Optional[str] = typer.Option(
+        None, "--categoria", "-c", help="Sobrescreve a categoria detectada na página."
+    ),
+) -> None:
+    """Rastreia um produto que você já achou: cola a URL (ou o título) e ele
+    captura a identidade canônica e cadastra pra você comparar preço (PLANO §1).
+
+    Você faz a descoberta no Google; a ferramenta só lê o produto que você
+    escolheu (1 página que você já abriu — não é um robô vasculhando a loja).
+    """
+    if not url and not titulo:
+        console.print(
+            "[red]Informe a URL do produto[/] (ou [bold]--titulo[/] como fallback)."
+        )
+        raise typer.Exit(code=1)
+
+    # Precedência: página lida (identidade rica) → título que você colou → nome
+    # que está na própria URL (quando a loja bloqueia, o slug salva o dia).
+    ref: Optional[ReferenciaProduto] = None
+    if url:
+        with console.status("[bold]Lendo a página do produto...[/]"):
+            ref = asyncio.run(LeitorDePagina().ler(url))
+    if ref is None and titulo:
+        ref = extrair_do_titulo(titulo)
+    if ref is None and url:
+        ref = extrair_do_slug(url)
+        if ref is not None:
+            console.print(
+                "[yellow]Não li a página[/] (a loja bloqueou ou não expõe dado "
+                "estruturado), [yellow]mas aproveitei o nome que está na própria URL.[/]"
+            )
+    if ref is None:
+        console.print(
+            "[red]Não deu pra identificar o produto por essa URL.[/] "
+            "Cole o título com [bold]--titulo[/]."
+        )
+        raise typer.Exit(code=1)
+
+    produto = ref.para_produto()
+    if categoria:
+        produto = replace(produto, categoria=categoria)  # Produto é frozen
+    con, _ = _abrir()
+    salvo = RepositorioProdutoSQLite(con).salvar(produto, CONTA_PADRAO)
+    _mostrar_referencia(salvo, ref)
+
+
+def _mostrar_referencia(produto: Produto, ref: ReferenciaProduto) -> None:
+    """Mostra a identidade capturada e aponta o próximo passo (buscar preço)."""
+    tabela = Table(title="Produto identificado")
+    tabela.add_column("campo", style="dim")
+    tabela.add_column("valor", style="bold")
+    tabela.add_row("nome", produto.nome)
+    tabela.add_row("categoria", produto.categoria)
+    if produto.marca:
+        tabela.add_row("marca", produto.marca)
+    if produto.modelo:
+        tabela.add_row("modelo", produto.modelo)
+    if produto.ean:
+        tabela.add_row("EAN", produto.ean)
+    if produto.cor:
+        tabela.add_row("cor", produto.cor)
+    if ref.preco is not None:
+        tabela.add_row("preço de referência", f"R$ {ref.preco}")
+    console.print(tabela)
+    console.print(
+        f"[green]✓[/] Cadastrado (id [cyan]{produto.id}[/]). "
+        f"Agora rode [bold]buscar {produto.id}[/] pra comparar o preço nas lojas."
     )
 
 
