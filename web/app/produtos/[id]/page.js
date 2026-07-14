@@ -1,0 +1,141 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
+import { api, reais } from "../../lib/api";
+
+function quando(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+export default function Dashboard() {
+  const { id } = useParams();
+  const router = useRouter();
+  const [dados, setDados] = useState(null);
+  const [erro, setErro] = useState(null);
+  const [buscando, setBuscando] = useState(false);
+
+  useEffect(() => {
+    api.obterProduto(id).then(setDados).catch((e) => setErro(e.message));
+  }, [id]);
+
+  async function buscarAgora() {
+    setBuscando(true);
+    setErro(null);
+    try {
+      setDados(await api.buscarAgora(id));
+    } catch (e) {
+      setErro(e.message);
+    } finally {
+      setBuscando(false);
+    }
+  }
+
+  async function arquivar() {
+    if (!confirm("Arquivar este produto? Ele some da lista (o histórico fica guardado).")) return;
+    try {
+      await api.arquivarProduto(id);
+      router.push("/");
+    } catch (e) {
+      setErro(e.message);
+    }
+  }
+
+  if (erro) return <main className="container"><div className="card" style={{ color: "var(--vermelho)" }}>{erro}</div></main>;
+  if (!dados) return <main className="container"><p className="vazio">Carregando…</p></main>;
+
+  const { produto, ofertas } = dados;
+  const referencia = produto.preco_referencia ? Number(produto.preco_referencia) : null;
+  const precos = ofertas.map((o) => Number(o.preco_final));
+  const maiorBase = precos.length ? Math.max(...precos) : 0;
+  const escala = Math.max(maiorBase, referencia || 0) || 1; // barras e ref na mesma escala
+  const menor = precos.length ? Math.min(...precos) : 0;
+  const economia = referencia !== null && precos.length ? referencia - menor : null;
+
+  return (
+    <main className="container">
+      <div className="cabecalho">
+        <Link href="/" className="link-loja">← Produtos</Link>
+      </div>
+      <div className="cabecalho">
+        <h1>{produto.nome}</h1>
+        <span className="badge">{produto.categoria}</span>
+        <div className="espaco" />
+        <button className="btn fantasma" onClick={arquivar}>Arquivar</button>
+        <button className="btn" onClick={buscarAgora} disabled={buscando}>
+          {buscando ? "Buscando…" : "🔎 Buscar agora"}
+        </button>
+      </div>
+
+      {ofertas.length > 0 && (
+        <div className="stats">
+          <div className="card stat">
+            <div className="rotulo">Melhor preço</div>
+            <div className="valor" style={{ color: "var(--verde)" }}>{reais(menor)}</div>
+          </div>
+          {referencia !== null && (
+            <div className="card stat">
+              <div className="rotulo">Preço de referência</div>
+              <div className="valor">{reais(referencia)}</div>
+            </div>
+          )}
+          {economia !== null && (
+            <div className="card stat">
+              <div className="rotulo">{economia >= 0 ? "Economia vs. referência" : "Acima da referência"}</div>
+              <div className="valor" style={{ color: economia >= 0 ? "var(--verde)" : "var(--vermelho)" }}>
+                {reais(Math.abs(economia))}
+              </div>
+            </div>
+          )}
+          <div className="card stat">
+            <div className="rotulo">Lojas encontradas</div>
+            <div className="valor">{ofertas.length}</div>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>Comparação por loja</h2>
+        {referencia !== null && ofertas.length > 0 && (
+          <p className="titulo" style={{ marginTop: -6 }}>
+            A linha tracejada marca seu preço de referência ({reais(referencia)}).
+            Barra <span style={{ color: "var(--verde)" }}>verde</span> = abaixo dela.
+          </p>
+        )}
+        {ofertas.length === 0 && (
+          <p className="vazio" style={{ padding: 24 }}>
+            {buscando ? "Buscando nas lojas…" : "Sem ofertas ainda. Clique em “Buscar agora”."}
+          </p>
+        )}
+        {ofertas.map((o, i) => {
+          const preco = Number(o.preco_final);
+          const largura = (preco / escala) * 100;
+          const refPct = referencia !== null ? (referencia / escala) * 100 : null;
+          const abaixoRef = referencia !== null && preco <= referencia;
+          const ehMenor = preco === menor;
+          return (
+            <div className="oferta" key={i}>
+              <div className="linha1">
+                <span className="loja">{o.loja}</span>
+                {ehMenor && <span className="melhor">● mais barato</span>}
+                <span className="preco">{reais(preco)}</span>
+              </div>
+              <div className="titulo">{o.titulo}</div>
+              <div className="barra">
+                <span style={{ width: `${largura}%`, background: abaixoRef ? "var(--verde)" : undefined }} />
+                {refPct !== null && <i className="ref-linha" style={{ left: `${refPct}%` }} />}
+              </div>
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <a className="link-loja" href={o.url} target="_blank" rel="noreferrer">abrir na loja ↗</a>
+                {o.coletado_em && <span className="titulo">coletado {quando(o.coletado_em)}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </main>
+  );
+}

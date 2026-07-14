@@ -1,0 +1,57 @@
+[
+  {
+    "productId": "8387649",
+    "productName": "Echo Dot 5 Geração Alexa Preto",
+    "brand": "Amazon",
+    "linkText": "echo-dot-5-geracao-alexa-preto",
+    "link": "https://www.americanas.com.br/echo-dot-5-geracao-alexa-preto/p",
+    "items": [
+      {
+        "itemId": "1",
+        "ean": "0840080503417",
+        "sellers": [
+          {
+            "sellerId": "1",
+            "sellerName": "Americanas",
+            "sellerDefault": true,
+            "commertialOffer": {
+              "Price": 279.0,
+              "ListPrice": 349.0,
+              "AvailableQuantity": 100,
+              "IsAvailable": true
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "productId": "222",
+    "productName": "Echo Dot 4 Geração (parceiro)",
+    "brand": "Amazon",
+    "linkText": "echo-dot-4-geracao",
+    "items": [
+      {
+        "itemId": "2",
+        "ean": "111",
+        "sellers": [
+          {
+            "sellerId": "9393",
+            "sellerName": "Loja Parceira",
+            "commertialOffer": {
+              "Price": 199.9,
+              "AvailableQuantity": 0,
+              "IsAvailable": false
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "productId": "333",
+    "productName": "Produto sem oferta",
+    "linkText": "produto-sem-oferta",
+    "items": []
+  }
+]

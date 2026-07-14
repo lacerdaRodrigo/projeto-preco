@@ -1,0 +1,32 @@
+{
+  "products": [
+    {
+      "id": 121,
+      "title": "iPhone 13 Pro",
+      "category": "smartphones",
+      "price": 1099.99,
+      "stock": 40,
+      "brand": "Apple",
+      "availabilityStatus": "In Stock"
+    },
+    {
+      "id": 122,
+      "title": "iPhone 13",
+      "category": "smartphones",
+      "price": 899.5,
+      "stock": 0,
+      "brand": "Apple",
+      "availabilityStatus": "Out of Stock"
+    },
+    {
+      "id": 999,
+      "title": "Produto sem preco",
+      "category": "smartphones",
+      "price": null,
+      "stock": 5
+    }
+  ],
+  "total": 3,
+  "skip": 0,
+  "limit": 20
+}

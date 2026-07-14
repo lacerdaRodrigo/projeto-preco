@@ -1,0 +1,44 @@
+# === Segredos — NUNCA versionar (RN: sem segredo no git) ===
+.env
+.env.*
+!.env.example
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# === Testes / cobertura / cache ===
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# === Banco local / SQLite (só usado em testes offline) ===
+*.db
+*.sqlite
+*.sqlite3
+
+# === Web (Next.js) — quando a V2 chegar ===
+node_modules/
+web/.next/
+web/out/
+
+# === Supabase CLI (dados locais) ===
+supabase/.branches/
+supabase/.temp/
+
+# === Sistema operacional / editor ===
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

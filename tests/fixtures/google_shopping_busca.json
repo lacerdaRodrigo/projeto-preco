@@ -1,0 +1,73 @@
+{
+  "searchParameters": {
+    "q": "Echo Dot 5",
+    "gl": "br",
+    "hl": "pt-br",
+    "type": "shopping",
+    "num": 40,
+    "page": 1,
+    "location": "Brazil",
+    "engine": "google"
+  },
+  "shopping": [
+    {
+      "title": "Echo Dot 5a Geração Smart Speaker com Alexa",
+      "source": "Mercado Livre",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,catalogid:14019147199478035085,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 327,85 agora",
+      "imageUrl": "https://encrypted-tbn3.gstatic.com/shopping?q=tbn:ANd9GcSSO3SPKLl550g0XOTNKNxZbb5exfa69mMrRb3qfRJEWJXbTqJlKqLTZqYWtkFMmmHuW8gTo8UOhxANKzsA0mvO4ntGNmHGzI7jMvzuTXGC9_3qeeeTSvqwzA",
+      "productId": "14019147199478035085",
+      "position": 1
+    },
+    {
+      "title": "Caixa de Som Amazon Echo Dot 5 Geração",
+      "source": "Shopee",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,catalogid:12983319762769502025,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 478,40",
+      "imageUrl": "https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcTg2mhPsK3K_PUzE5UoJQtIZi-YZv2j0Wj9_CMR4E9rItzqW4Ba2RuX1qBuiLSHlaHpHAdx7vhhkaSBJxDqfrH_fIPOBFClY5mZ4LBuPfY",
+      "productId": "12983319762769502025",
+      "position": 11
+    },
+    {
+      "title": "Caixa de Som Amazon Echo Dot 5 Geração / Alexa Bluetooth",
+      "source": "mercadolivre.com.br",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,catalogid:2311021891581476948,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 427,50",
+      "imageUrl": "https://encrypted-tbn2.gstatic.com/shopping?q=tbn:ANd9GcTUgb5IQuH9Y62y3nupaCqXvP8P8_MIrDzMM6xtrEoulD3KS42cyLn4TEf6y4vcp6yTK7ihHmxsEQD3ATZV4lgL7-toW-Mt0wtp-6PcbyCEhpqS3eiBEh7x",
+      "rating": 4.6,
+      "ratingCount": 23,
+      "productId": "2311021891581476948",
+      "position": 3
+    },
+    {
+      "title": "Amazon Alexa Echo Dot",
+      "source": "KaBuM!",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,catalogid:14021909691002650854,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 489,00 agora",
+      "imageUrl": "https://encrypted-tbn2.gstatic.com/shopping?q=tbn:ANd9GcSaYH97NIvRgUIqQdRYLRAPmP3vNearlvY8CyD7p93NjKUuoSazrpresL20yNE2VPk2pZcXNhgm4laanZ-ozNGDc62KfG61",
+      "productId": "14021909691002650854",
+      "position": 2
+    },
+    {
+      "title": "Echo Dot 5a Geração Lançamento 2022",
+      "source": "Carrefour",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,catalogid:2985779935656903337,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 620,12 agora",
+      "imageUrl": "https://encrypted-tbn0.gstatic.com/shopping?q=tbn:ANd9GcTIwi6YRQ-3nXlSWYgCkeACHnU76KGklJRe1McbHM6TRDobuZp8vPV4ok26nqutRozeG5PZre5zdJizBQa64p9XF-UvnNdog0ZT4Wdd2cJGV6zsMFz3ncC_Gw",
+      "rating": 4.6,
+      "ratingCount": 406,
+      "productId": "2985779935656903337",
+      "position": 6
+    },
+    {
+      "title": "Echo Dot 5a geração - Smart Speaker com Alexa - Preto",
+      "source": "Zoom",
+      "link": "https://www.google.com/search?ibp=oshop&q=Echo+Dot+5&prds=localAnnotatedOfferId:1,productid:10453919142775404078,pvo:2,pvt:hg,rds:PC_6027158597472037202%7CPROD_PC_6027158597472037202&gl=br&udm=28&pvorigin=2",
+      "price": "R$ 443,33 agora",
+      "imageUrl": "https://encrypted-tbn3.gstatic.com/shopping?q=tbn:ANd9GcQrhzP0xKeC39jImihG5iohGMJ8dstzsIGr4HMQOWFX2m_MuwQZ87sLse2sjfUZHUdzFDdKdvMmUcQ71OjnSB0j8tjAeW1WsM9YFkY2-Pe8Xb9B7YoLuPXVIg",
+      "productId": "10453919142775404078",
+      "position": 7
+    }
+  ],
+  "credits": 2
+}

@@ -1,0 +1,41 @@
+{
+  "site_id": "MLB",
+  "query": "notebook asus vivobook 15",
+  "paging": { "total": 3, "limit": 50, "offset": 0 },
+  "results": [
+    {
+      "id": "MLB1111111111",
+      "title": "Notebook Asus Vivobook 15 16GB 512GB SSD Windows 11",
+      "price": 3499.9,
+      "permalink": "https://produto.mercadolivre.com.br/MLB-1111111111",
+      "available_quantity": 5,
+      "shipping": { "free_shipping": true },
+      "seller": { "nickname": "ASUS OFICIAL", "official_store_id": 42 },
+      "installments": { "quantity": 12, "rate": 0, "amount": 291.66 },
+      "attributes": [
+        { "id": "BRAND", "value_name": "Asus" },
+        { "id": "GTIN", "value_name": "0195553777777" }
+      ]
+    },
+    {
+      "id": "MLB2222222222",
+      "title": "Notebook Asus Vivobook 15 8GB 256GB SSD",
+      "price": 2599,
+      "permalink": "https://produto.mercadolivre.com.br/MLB-2222222222",
+      "available_quantity": 0,
+      "shipping": { "free_shipping": false },
+      "seller": { "nickname": "Loja XYZ Informatica" },
+      "installments": { "quantity": 10, "rate": 15.2, "amount": 299.5 },
+      "attributes": []
+    },
+    {
+      "id": "MLB3333333333",
+      "title": "Anuncio quebrado sem preco",
+      "price": null,
+      "permalink": "https://produto.mercadolivre.com.br/MLB-3333333333",
+      "available_quantity": 1,
+      "shipping": { "free_shipping": false },
+      "attributes": []
+    }
+  ]
+}

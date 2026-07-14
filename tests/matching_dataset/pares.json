@@ -1,0 +1,75 @@
+[
+  {
+    "caso": "mesmo celular, cor em inglês e unidade separada",
+    "produto": {
+      "nome": "Galaxy S25 Ultra 512GB Preto",
+      "marca": "Samsung",
+      "categoria": "celular"
+    },
+    "oferta_titulo": "Samsung Galaxy S25 Ultra Black 512 GB Tela 6.9",
+    "mesmo": true
+  },
+  {
+    "caso": "mesmo produto por EAN, título irreconhecível",
+    "produto": {
+      "nome": "Echo Dot 5",
+      "categoria": "eletronicos",
+      "ean": "7891234567890"
+    },
+    "oferta_titulo": "Smart Speaker com Alexa - modelo 2024",
+    "oferta_ean": "7891234567890",
+    "mesmo": true
+  },
+  {
+    "caso": "mesmo notebook, capacidade bate, título verboso",
+    "produto": {
+      "nome": "Vivobook 15",
+      "marca": "Asus",
+      "categoria": "notebook",
+      "atributos": {"capacidade": "16gb"}
+    },
+    "oferta_titulo": "Notebook Asus Vivobook 15 16GB 512GB SSD Windows 11",
+    "mesmo": true
+  },
+  {
+    "caso": "acessório: capa não é o produto (veto)",
+    "produto": {
+      "nome": "Echo Dot 5",
+      "categoria": "eletronicos",
+      "palavras_proibidas": ["capa"]
+    },
+    "oferta_titulo": "Capa Case Protetora para Echo Dot 5 Geração",
+    "mesmo": false
+  },
+  {
+    "caso": "mesma linha, capacidade divergente (8GB != 16GB)",
+    "produto": {
+      "nome": "Vivobook 15",
+      "marca": "Asus",
+      "categoria": "notebook",
+      "atributos": {"capacidade": "16gb"}
+    },
+    "oferta_titulo": "Notebook Asus Vivobook 15 8GB 256GB SSD",
+    "mesmo": false
+  },
+  {
+    "caso": "faltou palavra obrigatória (ultra)",
+    "produto": {
+      "nome": "Galaxy S25",
+      "marca": "Samsung",
+      "categoria": "celular",
+      "palavras_obrigatorias": ["ultra"]
+    },
+    "oferta_titulo": "Samsung Galaxy S25 128GB Preto",
+    "mesmo": false
+  },
+  {
+    "caso": "produto totalmente diferente",
+    "produto": {
+      "nome": "Echo Dot 5",
+      "categoria": "eletronicos"
+    },
+    "oferta_titulo": "Cadeira Gamer ThunderX3 EC3 Preta",
+    "mesmo": false
+  }
+]

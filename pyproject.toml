@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-price-tracker"
+version = "0.1.0"
+description = "Comparador pessoal de preços em lojas online BR (worker Python)."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",          # cliente HTTP async (coletores)
+    "typer",          # CLI
+    "rich",           # saída bonita no terminal
+    "python-dotenv",  # carrega o .env
+]
+
+[project.scripts]
+pesquisa-preco = "interface.cli:app"
+
+[project.optional-dependencies]
+# Adaptador web (FastAPI) — a "porta web" sobre o mesmo núcleo do CLI.
+web = [
+    "fastapi",
+    "uvicorn[standard]",  # servidor ASGI para rodar em localhost
+]
+
+# Ferramentas de desenvolvimento (teste, lint, tipo, segurança).
+dev = [
+    "pytest",
+    "respx",       # mock de HTTP nos testes (nunca bate na loja real)
+    "ruff",        # lint + format
+    "mypy",        # checagem de tipos
+    "bandit",      # análise de segurança do código Python
+    "pip-audit",   # CVEs nas dependências
+]
+
+# ---- Empacotamento: o código-fonte vive em src/ ----
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["config"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---- Testes ----
+[tool.pytest.ini_options]
+pythonpath = ["src"]   # deixa importar `config`, `domain`... sem instalar
+testpaths = ["tests"]
+
+# ---- Lint / format ----
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+# ---- Tipos ----
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+# ---- Segurança (bandit) ----
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

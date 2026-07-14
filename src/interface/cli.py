@@ -1,0 +1,257 @@
+"""CLI do Smart Price Tracker (§26) — cadastrar produtos e ver o ranking.
+
+É o "composition root": o único lugar que amarra config + adaptadores + caso de
+uso. As camadas de baixo não conhecem a CLI; a CLI é que conhece todas.
+
+Uso:
+    pesquisa-preco cadastrar -n "Echo Dot 5" -c eletronicos --proibidas "capa,suporte"
+    pesquisa-preco listar
+    pesquisa-preco buscar 1               # Google Shopping (várias lojas BR)
+    pesquisa-preco buscar 1 --kabum       # só KaBuM! (frete/à vista/estoque real)
+"""
+
+import asyncio
+import sqlite3
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from adapters.coletores.google_shopping import ColetorGoogleShopping
+from adapters.coletores.kabum import ColetorKabum
+from adapters.coletores.sandbox import ColetorSandbox
+from adapters.coletores.vtex import lojas_vtex_padrao
+from adapters.repositorios.sqlite import (
+    RepositorioProdutoSQLite,
+    RepositorioSKUSQLite,
+    RepositorioSnapshotSQLite,
+    conectar,
+)
+from application.buscar_produto import (
+    BuscarProduto,
+    ProdutoInexistente,
+    ResultadoBusca,
+)
+from application.coletores import Coletor
+from config import Config, carregar_config
+from domain import Produto
+
+# V1: uma conta fixa (eu + noiva vêm no V6; o gancho conta_id já existe). RN16.
+CONTA_PADRAO = 1
+
+app = typer.Typer(
+    help="Smart Price Tracker — comparador pessoal de preços (V1 local).",
+    add_completion=False,
+)
+console = Console()
+
+
+def _caminho_do_banco(database_url: str) -> str:
+    """Extrai o caminho do arquivo de uma URL 'sqlite:///./precos.db'."""
+    prefixo = "sqlite:///"
+    if database_url.startswith(prefixo):
+        return database_url[len(prefixo) :]
+    return database_url
+
+
+def _abrir() -> tuple[sqlite3.Connection, Config]:
+    config = carregar_config()
+    return conectar(_caminho_do_banco(config.database_url)), config
+
+
+def _lista(texto: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in texto.split(",") if item.strip())
+
+
+@app.command()
+def cadastrar(
+    nome: str = typer.Option(..., "--nome", "-n", help="Nome do produto."),
+    categoria: str = typer.Option(..., "--categoria", "-c", help="Categoria."),
+    marca: Optional[str] = typer.Option(None, help="Marca (ajuda o matching)."),
+    modelo: Optional[str] = typer.Option(None, help="Modelo."),
+    ean: Optional[str] = typer.Option(None, help="EAN/GTIN (a melhor chave)."),
+    proibidas: str = typer.Option("", help="Palavras proibidas, separadas por vírgula."),
+    obrigatorias: str = typer.Option("", help="Palavras obrigatórias, por vírgula."),
+) -> None:
+    """Cadastra um produto para acompanhar."""
+    con, _ = _abrir()
+    produto = RepositorioProdutoSQLite(con).salvar(
+        Produto(
+            nome=nome,
+            categoria=categoria,
+            marca=marca,
+            modelo=modelo,
+            ean=ean,
+            palavras_proibidas=_lista(proibidas),
+            palavras_obrigatorias=_lista(obrigatorias),
+        ),
+        CONTA_PADRAO,
+    )
+    console.print(
+        f"[green]✓[/] Produto cadastrado: [bold]{produto.nome}[/] "
+        f"(id [cyan]{produto.id}[/])"
+    )
+
+
+@app.command()
+def listar() -> None:
+    """Lista os produtos cadastrados."""
+    con, _ = _abrir()
+    produtos = RepositorioProdutoSQLite(con).produtos_ativos(CONTA_PADRAO)
+    if not produtos:
+        console.print("[yellow]Nenhum produto ainda.[/] Use [bold]cadastrar[/].")
+        return
+    tabela = Table(title="Produtos acompanhados")
+    tabela.add_column("id", justify="right", style="cyan")
+    tabela.add_column("nome", style="bold")
+    tabela.add_column("categoria")
+    tabela.add_column("proibidas", style="dim")
+    for p in produtos:
+        tabela.add_row(str(p.id), p.nome, p.categoria, ", ".join(p.palavras_proibidas))
+    console.print(tabela)
+
+
+@app.command()
+def ofertas(
+    produto_id: int = typer.Argument(..., help="id do produto (veja em 'listar')."),
+) -> None:
+    """Mostra as ofertas já guardadas de um produto, com o link completo (copiável)."""
+    con, _ = _abrir()
+    produto = RepositorioProdutoSQLite(con).obter(produto_id, CONTA_PADRAO)
+    if produto is None:
+        console.print(f"[red]Produto {produto_id} não encontrado.[/] Veja 'listar'.")
+        raise typer.Exit(code=1)
+
+    repo_sku = RepositorioSKUSQLite(con)
+    repo_snap = RepositorioSnapshotSQLite(con)
+    skus = repo_sku.de_produto(produto_id, CONTA_PADRAO)
+    if not skus:
+        console.print(
+            f"[yellow]Nenhuma oferta guardada para '{produto.nome}'.[/] "
+            "Rode [bold]buscar[/] primeiro."
+        )
+        return
+
+    # Junta cada SKU ao seu último preço, ordena pelo mais barato.
+    linhas = []
+    for sku in skus:
+        if sku.id is None:
+            continue
+        snap = repo_snap.ultimo_snapshot(sku.id, CONTA_PADRAO)
+        preco = snap.preco if snap else None
+        linhas.append((preco, sku.loja_origem, sku.url))
+    linhas.sort(key=lambda t: (t[0] is None, t[0] or 0))
+
+    console.print(f"\n[bold]{produto.nome}[/] — ofertas guardadas:\n")
+    for preco, loja, url in linhas:
+        valor = f"R$ {preco}" if preco is not None else "—"
+        # Loja vira link clicável (Ctrl+clique); a URL sai crua embaixo, sem
+        # quebra artificial (soft_wrap) pra copiar limpo mesmo sendo comprida.
+        console.print(f"[green]{valor:>12}[/]  [bold][link={url}]{loja}[/link][/]")
+        console.print(f"[dim]{url}[/]", soft_wrap=True)
+
+
+@app.command()
+def buscar(
+    produto_id: int = typer.Argument(..., help="id do produto (veja em 'listar')."),
+    cep: Optional[str] = typer.Option(None, help="CEP destino (para cotar frete)."),
+    demo: bool = typer.Option(
+        False, "--demo", help="Usa uma loja de demonstração (API aberta, sem token)."
+    ),
+    kabum: bool = typer.Option(
+        False, "--kabum", help="Só KaBuM! (dados ricos: frete, à vista, estoque real)."
+    ),
+    vtex: bool = typer.Option(
+        False,
+        "--vtex",
+        help="Inclui lojas VTEX (melhor esforço — podem bloquear por anti-bot).",
+    ),
+) -> None:
+    """Busca o produto nas lojas e mostra o ranking por preço final à vista.
+
+    Padrão: Google Shopping (várias lojas BR de uma vez, precisa da SERPER_API_KEY).
+    """
+    con, config = _abrir()
+    coletores: list[Coletor]
+    if demo:
+        coletores = [ColetorSandbox()]
+    elif kabum:
+        coletores = [ColetorKabum()]
+    elif vtex:
+        coletores = [ColetorKabum(), *lojas_vtex_padrao()]
+    else:
+        # Padrão: comparação real em N lojas via Google Shopping (Serper).
+        if not config.serper_api_key:
+            console.print(
+                "[red]Falta a SERPER_API_KEY no .env[/] (chave grátis em "
+                "https://serper.dev). Ou use [bold]--kabum[/] / [bold]--demo[/]."
+            )
+            raise typer.Exit(code=1)
+        coletores = [ColetorGoogleShopping(config.serper_api_key)]
+    caso_de_uso = BuscarProduto(
+        coletores=coletores,
+        repo_produto=RepositorioProdutoSQLite(con),
+        repo_sku=RepositorioSKUSQLite(con),
+        repo_snapshot=RepositorioSnapshotSQLite(con),
+    )
+    try:
+        with console.status("[bold]Buscando nas lojas...[/]"):
+            resultado = asyncio.run(
+                caso_de_uso.executar(produto_id, CONTA_PADRAO, cep or config.cep_destino)
+            )
+    except ProdutoInexistente:
+        console.print(f"[red]Produto {produto_id} não encontrado.[/] Veja 'listar'.")
+        raise typer.Exit(code=1) from None
+
+    _mostrar_ranking(resultado)
+
+
+def _mostrar_ranking(resultado: ResultadoBusca) -> None:
+    console.print(f"\n[bold]{resultado.produto.nome}[/] — melhores ofertas:\n")
+    if resultado.ranking:
+        tabela = Table()
+        tabela.add_column("#", justify="right")
+        tabela.add_column("Preço final", justify="right", style="green")
+        tabela.add_column("Loja")
+        tabela.add_column("Título (clique para abrir)")
+        tabela.add_column("Estoque", justify="center")
+        tabela.add_column("Match", justify="right", style="dim")
+        for i, o in enumerate(resultado.ranking, 1):
+            # Título vira link clicável pra oferta (Ctrl+clique nos terminais com
+            # suporte a hyperlink, como o gnome-terminal). Mantém a tabela limpa.
+            titulo = f"[link={o.url}]{o.titulo[:42]}[/link]" if o.url else o.titulo[:42]
+            tabela.add_row(
+                str(i),
+                f"R$ {o.preco_final}",
+                o.loja,
+                titulo,
+                "✓" if o.em_estoque else "—",
+                f"{o.score_match:.2f}",
+            )
+        console.print(tabela)
+        console.print(
+            "[dim]Dica: Ctrl+clique no título abre a oferta. "
+            "Veja os links completos (copiáveis) com [/][bold]ofertas <id>[/][dim].[/]"
+        )
+    else:
+        console.print("[yellow]Nenhuma oferta casou com o produto.[/]")
+
+    console.print(
+        f"\n[dim]em revisão: {resultado.em_revisao} · "
+        f"descartadas: {resultado.descartadas}[/]"
+    )
+    if resultado.lojas_indisponiveis:
+        console.print(
+            f"[yellow]não responderam (instabilidade ou bloqueio de IP — tente do "
+            f"seu PC): {', '.join(resultado.lojas_indisponiveis)}[/]"
+        )
+    if resultado.lojas_degradadas:
+        console.print(
+            f"[red]resposta inesperada (mudança de formato ou anti-bot): "
+            f"{', '.join(resultado.lojas_degradadas)}[/]"
+        )
+
+
+if __name__ == "__main__":
+    app()

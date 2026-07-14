@@ -497,7 +497,7 @@ O maestro operacional: pega UM produto e coordena todos os passos até o resulta
 1. **Carrega contexto:** o produto + a `CONFIG` da conta (CEP destino, cashback elegível).
 2. **Fan-out:** dispara todos os coletores de lojas `ativa`s **em paralelo** (async), cada um com seu rate-limit e timeout.
 3. **Coleta resiliente:** coletor que falha não derruba os outros — resultado parcial + log; `ColetorQuebrado` marca `coletor_degradado` e não grava (RN08, RN12).
-4. **Matching:** cada `OfertaBruta` passa pelo matcher (seção 14) → aceita (≥0.85) vira/atualiza `SKU`; "revisar" entra na fila; descarta é ignorada.
+4. **Matching:** cada `OfertaBruta` passa pelo matcher (seção 14) → aceita (≥0.85) entra; "revisar" entra na fila; descarta é ignorada. Como uma loja devolve **vários anúncios** do mesmo produto, escolhe-se a **melhor oferta por loja** (em estoque, menor preço final) para virar/atualizar o `SKU` único daquela loja (RN01).
 5. **Preço final:** calcula por SKU (seção 16) com cupons/cashback do catálogo e da config.
 6. **Persistência idempotente:** grava/atualiza SKU; snapshot **só se mudou** (RN11). Rodar 2x = mesmo estado.
 7. **Alertas:** compara com o estado anterior e dispara o que couber via Notificador (seção 18).
@@ -796,18 +796,19 @@ smart-price-tracker/
 │   │   ├── produto.py
 │   │   ├── oferta.py
 │   │   ├── cupom.py
-│   │   └── preco_final.py
-│   ├── application/              # casos de uso
+│   │   ├── preco_final.py
+│   │   └── matching/             # matcher determinístico e explicável (§14 é puro)
+│   ├── application/              # casos de uso + PORTAS (contratos)
+│   │   ├── coletores.py          # porta Coletor + erros tipados (o núcleo define, o adaptador implementa)
 │   │   ├── buscar_produto.py
 │   │   ├── comparar_ofertas.py
 │   │   ├── avaliar_cupom.py
 │   │   └── gerar_alertas.py
 │   ├── adapters/
-│   │   ├── coletores/            # 1 arquivo por loja (plugável)
-│   │   │   ├── base.py           # interface Coletor
+│   │   ├── coletores/            # 1 arquivo por loja (plugável); a porta Coletor fica no núcleo (application/coletores.py)
 │   │   │   ├── mercado_livre.py
 │   │   │   └── kabum.py
-│   │   ├── matching/             # normalização + score
+│   │   ├── matching/             # plug-in de IA p/ o matching (V2+); heurística pura fica em domain/matching/
 │   │   ├── repositorios/         # Supabase Postgres (contrato Repositório)
 │   │   └── notificadores/        # e-mail SMTP
 │   ├── interface/

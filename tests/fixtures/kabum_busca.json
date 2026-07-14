@@ -1,0 +1,46 @@
+{
+  "meta": { "total_items_count": 3 },
+  "data": [
+    {
+      "type": "products",
+      "id": 426028,
+      "attributes": {
+        "title": "SSD 1TB Kingston NV2 M.2 2280 PCIe",
+        "price": 532.57,
+        "price_with_discount": 468.66,
+        "available": true,
+        "stock": 12,
+        "has_free_shipping": true,
+        "is_marketplace": false,
+        "product_link": "ssd-1tb-kingston-nv2",
+        "manufacturer": { "id": 50, "name": "Kingston" }
+      }
+    },
+    {
+      "type": "products",
+      "id": 999001,
+      "attributes": {
+        "title": "SSD 1TB Kingston NV2 (vendedor parceiro)",
+        "price": 499.9,
+        "price_with_discount": 499.9,
+        "available": true,
+        "stock": 3,
+        "has_free_shipping": false,
+        "is_marketplace": true,
+        "product_link": "ssd-1tb-parceiro",
+        "marketplace": { "seller_id": 9393, "seller_name": "EQUIPECLUB" }
+      }
+    },
+    {
+      "type": "products",
+      "id": 777,
+      "attributes": {
+        "title": "Produto sem preco (anuncio quebrado)",
+        "price": null,
+        "available": true,
+        "stock": 1,
+        "is_marketplace": false
+      }
+    }
+  ]
+}
