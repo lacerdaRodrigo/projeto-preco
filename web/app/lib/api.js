@@ -20,6 +20,8 @@ export const api = {
   obterProduto: (id) => json(`/api/produtos/${id}`),
   cadastrarProduto: (dados) =>
     json("/api/produtos", { method: "POST", body: JSON.stringify(dados) }),
+  rastrear: (dados) =>
+    json("/api/rastrear", { method: "POST", body: JSON.stringify(dados) }),
   buscarAgora: (id) =>
     json(`/api/produtos/${id}/buscar`, { method: "POST" }),
   arquivarProduto: async (id) => {

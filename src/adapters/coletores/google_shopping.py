@@ -41,9 +41,20 @@ _URL_ORGANICA = "https://google.serper.dev/search"  # resolve o link direto da l
 _URL_SCRAPE = "https://scrape.serper.dev"  # renderiza a página (fura anti-bot; 2 créditos)
 # 40 resultados = leque largo de lojas numa busca (custa 2 créditos dos 2.500).
 _NUM_RESULTADOS = 40
+# Quantos orgânicos pedir pra achar o link direto da loja. Mais candidatos =
+# mais chance de confirmar a loja renomada (o 1º resultado às vezes é lista/blog).
+_NUM_ORGANICOS = 10
 # UA de navegador pra ler a página do produto (algumas lojas bloqueiam o agente
 # padrão de bibliotecas). Coleta educada, sem enganar — só evita bloqueio bobo.
 _USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125"
+# Cabeçalhos de navegador de verdade: sem Accept/Accept-Language algumas lojas
+# devolvem 403/desafio já na 1ª requisição. Manda o httpx confirmar mais lojas
+# de graça, antes de cair pro scrape (que custa 2 créditos).
+_HEADERS_NAVEGADOR = {
+    "User-Agent": _USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+}
 
 
 class ColetorGoogleShopping:
@@ -121,18 +132,21 @@ class ColetorGoogleShopping:
     async def _verificar_na_loja(
         self, cliente: httpx.AsyncClient, descricao: str, ofertas: list[OfertaBruta]
     ) -> list[OfertaBruta]:
-        """Descobrir no Serper → verificar na PÁGINA do produto (link + preço real).
+        """Descobrir no Serper → tentar CONFIRMAR o preço na página da loja BR.
 
-        Para cada loja (dedup por `vendedor`): acha a página do produto e lê o
-        preço ao vivo dela. Loja sem página de produto OU sem preço confirmado é
-        **descartada** — preço comparado é preço REAL, nunca vitrine aproximada.
+        Para cada loja (dedup por `vendedor`): acha a página BR do produto e lê o
+        preço ao vivo. Confirmou → entra com o preço REAL (`preco_confirmado`).
+        Não confirmou (loja bloqueou, sem página, sem dado estruturado) → NÃO some:
+        entra com o preço de vitrine do Google Shopping, marcado como não-confirmado
+        (a UI avisa). Assim a comparação traz as lojas BR de verdade, sem esconder
+        de onde veio o preço. Quem julga se a oferta é o produto certo é o matcher.
         """
         fontes = list({o.vendedor for o in ofertas if o.vendedor})
         resolvidos = await asyncio.gather(
             *(self._resolver_loja(cliente, descricao, fonte) for fonte in fontes),
             return_exceptions=True,
         )
-        # mapa: loja → (url_produto, preco_real, nome_real)
+        # mapa: loja → (url_produto | None, preco_real | None, nome_real | None)
         mapa = {
             fonte: dados
             for fonte, dados in zip(fontes, resolvidos)
@@ -140,27 +154,40 @@ class ColetorGoogleShopping:
         }
         novas: list[OfertaBruta] = []
         for oferta in ofertas:
-            dados = mapa.get(oferta.vendedor or "")
-            if dados is None:
-                continue  # descartada: sem produto/preço confirmado
-            url, preco, nome = dados
-            # Título vem da PÁGINA (produto real), não do Google (que traz título
-            # ruidoso/errado — ex.: "S25" numa página de S26). Cai pro do Google
-            # só se a página não expuser nome.
-            titulo = nome or oferta.titulo
-            novas.append(replace(oferta, url=url, preco=preco, titulo=titulo))
+            if not _loja_plausivelmente_br(oferta.vendedor):
+                continue  # nome fora do alfabeto PT (vietnamita/CJK) → fora
+            url, preco, nome = mapa.get(oferta.vendedor or "", (None, None, None))
+            if url is None:
+                # Página .br não resolveu. Se é loja BR RENOMADA, mantém como vitrine
+                # (o link já é a busca escopada na loja, que abre); a IA valida se é
+                # o produto certo. Senão, provável estrangeira (eBay, asus.com…) → fora.
+                if _loja_br_conhecida(oferta.vendedor):
+                    novas.append(replace(oferta, preco_confirmado=False))
+                continue
+            if preco is not None:
+                # Confirmado: preço + título vêm da PÁGINA BR (produto real). O
+                # título do Google é ruidoso/errado às vezes ("S25" numa de S26).
+                novas.append(replace(
+                    oferta, url=url, preco=preco,
+                    titulo=nome or oferta.titulo, preco_confirmado=True,
+                ))
+            else:
+                # Achou a página BR mas não leu o preço (bloqueio/sem dado):
+                # mantém o preço de vitrine do Google Shopping, marcado.
+                novas.append(replace(oferta, url=url, preco_confirmado=False))
         return novas
 
     async def _resolver_loja(
         self, cliente: httpx.AsyncClient, descricao: str, fonte: str
-    ) -> tuple[str, Any, str | None] | None:
-        """(url do produto, preço real, nome real) — ou None se não confirmar."""
+    ) -> tuple[str | None, Any, str | None]:
+        """(url do produto BR | None, preço confirmado | None, nome | None).
+
+        Sempre devolve tupla (nunca None): quem chama decide manter com vitrine
+        quando o preço não confirma."""
         url = await self._link_direto(cliente, descricao, fonte)
         if url is None:
-            return None
+            return (None, None, None)
         preco, nome = await self._ler_pagina(cliente, url)
-        if preco is None:
-            return None
         return (url, preco, nome)
 
     async def _ler_pagina(
@@ -175,7 +202,7 @@ class ColetorGoogleShopping:
         """
         try:
             resposta = await cliente.get(
-                url, headers={"User-Agent": _USER_AGENT}, follow_redirects=True
+                url, headers=_HEADERS_NAVEGADOR, follow_redirects=True
             )
             if resposta.status_code == 200:
                 preco, nome = _extrair_da_pagina(resposta.text)
@@ -223,10 +250,16 @@ class ColetorGoogleShopping:
         2. é página de produto, não lista/busca (o usuário quer o produto exato,
            não "818 resultados").
         """
+        # Query CURTA (âncora: marca+modelo, sem as specs) resolve mais páginas de
+        # produto — "Asus TUF Gaming A15 RTX 3050 512GB Casas Bahia" é específico
+        # demais pro orgânico; "Asus TUF Gaming A15 Casas Bahia" acha a página.
         resposta = await cliente.post(
             _URL_ORGANICA,
             headers=self._headers,
-            json={"q": f"{descricao} {fonte}", "gl": "br", "hl": "pt-br", "num": 5},
+            json={
+                "q": f"{_ancora(descricao)} {fonte}",
+                "gl": "br", "hl": "pt-br", "num": _NUM_ORGANICOS,
+            },
         )
         if resposta.status_code != 200:
             return None
@@ -235,7 +268,12 @@ class ColetorGoogleShopping:
             return None
         for item in organicos:
             link = item.get("link") if isinstance(item, dict) else None
-            if link and _dominio_combina(str(link), fonte) and _e_link_de_produto(str(link)):
+            if (
+                link
+                and _e_dominio_br(str(link))  # só loja BR (Amazon.com dos EUA fora)
+                and _dominio_combina(str(link), fonte)
+                and _e_link_de_produto(str(link))
+            ):
                 return _limpar_url(str(link))
         return None
 
@@ -285,7 +323,75 @@ def _limpar_url(url: str) -> str:
 
 # Marcas de URL de página de PRODUTO (não de lista/busca). Cobre os padrões mais
 # comuns no varejo BR: /produto/, /p/, VTEX terminando em /p, Amazon /dp/, etc.
-_MARCAS_PRODUTO = ("/produto/", "/produtos/", "/dp/", "/item/", "/pd/")
+_MARCAS_PRODUTO = ("/produto/", "/produtos/", "/dp/", "/gp/product/", "/item/", "/pd/")
+
+# Mercado Livre forma CLÁSSICA (não-catálogo): produto.mercadolivre.com.br/MLB-
+# 123456789-nome-_JM — sem /p/, então os padrões acima não pegam. É a maioria das
+# ofertas do ML; sem isto o ML caía quase sempre. Casa o código MLB no caminho.
+_ML_PRODUTO = re.compile(r"/mlb-?\d")
+
+
+def _ancora(descricao: str, n: int = 4) -> str:
+    """Os primeiros ``n`` tokens da busca — a âncora (marca+modelo) sem as specs.
+
+    Resolver o link direto com a query inteira over-constringe o orgânico (a loja
+    não titula com todas as specs); a âncora curta acha a página do produto."""
+    return " ".join(descricao.split()[:n])
+
+
+# Lojas BR renomadas (nome do vendedor no Google Shopping). REDE DE SEGURANÇA:
+# quando a página do produto não resolve no orgânico (o Google não indexou a
+# página exata daquela loja), uma loja BR conhecida ainda ENTRA como vitrine — a
+# IA valida se é o produto certo depois. Sem isto, produto pouco indexado voltava
+# 0 loja. Comparado sem acento/minúsculo, por substring. Estender à vontade.
+_LOJAS_BR_CONHECIDAS = frozenset({
+    "casas bahia", "casasbahia", "carrefour", "magazine luiza", "magazineluiza",
+    "magalu", "mercado livre", "mercadolivre", "amazon", "kabum", "shopee",
+    "fast shop",
+    "fastshop", "ponto", "pontofrio", "americanas", "extra", "shoptime",
+    "submarino", "girafa", "kalunga", "nissei", "brastemp", "compra certa",
+    "compracerta", "consul", "electrolux", "samsung", "positivo", "dell", "havan",
+    "leroy merlin", "madeiramadeira", "webcontinental", "gazin", "colombo",
+    "terabyte", "pichau", "efacil", "ricardo eletro", "fnac", "lg eletronics",
+})
+
+
+def _nome_normalizado(nome: str) -> str:
+    """Minúsculo e sem acento, pra comparar nome de loja de forma estável."""
+    decomposto = unicodedata.normalize("NFKD", nome.lower())
+    return "".join(c for c in decomposto if not unicodedata.combining(c))
+
+
+def _loja_br_conhecida(nome: str | None) -> bool:
+    """O vendedor é uma loja BR renomada? (rede de segurança quando a página não
+    resolve). Substring sobre o nome normalizado — 'Casas Bahia - Seller' casa."""
+    if not nome:
+        return False
+    alvo = _nome_normalizado(nome)
+    return any(loja in alvo for loja in _LOJAS_BR_CONHECIDAS)
+
+
+def _loja_plausivelmente_br(nome: str | None) -> bool:
+    """O nome da loja cabe no alfabeto português? (barra loja estrangeira).
+
+    Sem domínio pra checar o país (a oferta pode não ter resolvido link), o sinal
+    é o próprio nome: PT usa ASCII + acentos do Latin-1 (≤ U+00FF, "Casas Bahia",
+    "Nissei"). Nomes com caracteres além disso — vietnamita "Tiến" (U+1EBF), CJK —
+    são de loja estrangeira que vazou no Google Shopping. Sem nome → mantém (o
+    matcher ainda julga)."""
+    if not nome:
+        return True
+    return all(ord(c) <= 0xFF for c in nome)
+
+
+def _e_dominio_br(url: str) -> bool:
+    """O link é de uma loja brasileira? (domínio termina em .br).
+
+    Conserta o vazamento de loja estrangeira: "Amazon.com.br" no Google Shopping
+    às vezes resolve pro `amazon.com` dos EUA (preço em dólar) — o token "amazon"
+    combina, mas o país está errado. E-commerce BR usa .com.br/.br; exigir isso
+    barra o produto errado sem depender de manter lista de domínios."""
+    return urlparse(url).netloc.lower().endswith(".br")
 
 
 def _e_link_de_produto(url: str) -> bool:
@@ -299,8 +405,11 @@ def _e_link_de_produto(url: str) -> bool:
     if "google.com" in partes.netloc:  # link de busca não é produto
         return False
     caminho = partes.path.lower()
-    # "/p/" cobre Mercado Livre (/p/MLB...), Magazine Luiza (/p/241.../) e afins.
+    # "/p/" cobre Mercado Livre catálogo (/p/MLB...), Magazine Luiza (/p/241.../) e afins.
     if any(marca in caminho for marca in _MARCAS_PRODUTO) or "/p/" in caminho:
+        return True
+    # Mercado Livre forma clássica (/MLB-123...-_JM), sem /p/ — a maioria das ofertas.
+    if "mercadolivre" in partes.netloc.lower() and _ML_PRODUTO.search(caminho):
         return True
     # Padrão VTEX (Americanas, WebContinental, etc.): a URL do produto termina em /p.
     return caminho.endswith("/p") or caminho.endswith("/p/")

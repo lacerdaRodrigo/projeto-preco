@@ -43,6 +43,20 @@ def test_mouse_para_notebook_e_vetado():
     assert r.etapa is Etapa.VETO
 
 
+def test_combo_com_mouse_de_brinde_nao_e_vetado():
+    # O combo gamer é o NOTEBOOK com um mouse de brinde — não um mouse. A palavra
+    # de acessório vem solta no fim (não é o sujeito da oferta) → não veta.
+    produto = Produto(nome="Notebook Asus TUF Gaming A15 16GB 512GB",
+                      categoria="notebook", marca="Asus", modelo="A15",
+                      atributos={"capacidade": "512gb"})
+    r = casar(produto, _oferta(
+        "Notebook Asus TUF Gaming A15 Ryzen 7 16GB 512GB SSD RTX 3050 "
+        "+ Mouse Gamer de Brinde"
+    ))
+    assert r.etapa is not Etapa.VETO
+    assert r.destino is Destino.ACEITA
+
+
 def test_quem_rastreia_o_refil_nao_e_vetado():
     # Se o MEU produto é um refil, "refil" está no meu nome → o veto se desarma.
     produto = Produto(nome="Refil Filtro Electrolux PE12G Original",

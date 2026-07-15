@@ -13,21 +13,29 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from adapters.classificadores import ClassificadorLLM
 from adapters.coletores.google_shopping import ColetorGoogleShopping
 from adapters.coletores.kabum import ColetorKabum
+from adapters.extratores import extrair_identidade_do_titulo
 from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
     RepositorioSnapshotSQLite,
     conectar,
 )
-from application.buscar_produto import BuscarProduto, ProdutoInexistente
+from application.buscar_produto import (
+    BuscarProduto,
+    OfertaTriada,
+    ProdutoInexistente,
+    ResultadoBusca,
+)
 from application.coletores import Coletor
 from config import Config, carregar_config
 from domain import Produto, SnapshotPreco, calcular_preco_final, dinheiro
@@ -59,6 +67,18 @@ class ProdutoNovo(BaseModel):
     palavras_proibidas: list[str] = []
 
 
+class ProdutoPorTitulo(BaseModel):
+    """Entrada título-first (decisão firme): o Rodrigo cola o título; o extrator
+    tira marca/modelo/categoria. Os demais campos são refinamentos opcionais que
+    o título não carrega (não vêm do extrator)."""
+
+    titulo: str
+    categoria: str | None = None  # sobrescreve a categoria detectada
+    preco_referencia: str | None = None
+    palavras_obrigatorias: list[str] = []
+    palavras_proibidas: list[str] = []
+
+
 class ProdutoView(BaseModel):
     id: int
     nome: str
@@ -79,11 +99,32 @@ class OfertaView(BaseModel):
     em_estoque: bool
     score_match: float
     coletado_em: str | None = None  # quando esse preço foi coletado (ISO)
+    # False = preço de vitrine (Google Shopping), não confirmado na página.
+    preco_confirmado: bool = True
+
+
+class OfertaTriadaView(BaseModel):
+    """Uma oferta que ficou de fora do ranking, com o porquê (o funil visível)."""
+
+    loja: str
+    titulo: str
+    motivo: str
+    etapa: str
+    score: float
+
+
+class DiagnosticoView(BaseModel):
+    """Onde as lojas morreram nesta busca — pra a gente ver, não sumir em silêncio."""
+
+    em_revisao: list[OfertaTriadaView] = []
+    descartadas: list[OfertaTriadaView] = []
 
 
 class ProdutoDetalhe(BaseModel):
     produto: ProdutoView
     ofertas: list[OfertaView]
+    # Só preenchido logo após uma busca (o GET do produto não tem funil a mostrar).
+    diagnostico: DiagnosticoView | None = None
 
 
 # ---------- Fiação (mesma do CLI) ----------
@@ -99,6 +140,17 @@ def _coletores(config: Config) -> list[Coletor]:
     if config.serper_api_key:
         return [ColetorGoogleShopping(config.serper_api_key)]
     return [ColetorKabum()]
+
+
+def _classificador(config: Config) -> ClassificadorLLM | None:
+    """O juiz de identidade por IA. Sem chave NVIDIA → None (matching determinístico)."""
+    if not config.nvidia_api_key:
+        return None
+    return ClassificadorLLM(
+        config.nvidia_api_key,
+        config.nvidia_base_url,
+        config.nvidia_model_classificador,
+    )
 
 
 def _produto_view(produto: Produto) -> ProdutoView:
@@ -176,6 +228,39 @@ def cadastrar_produto(dados: ProdutoNovo) -> ProdutoView:
         con.close()
 
 
+@app.post("/api/rastrear", response_model=ProdutoView, status_code=201)
+def rastrear(dados: ProdutoPorTitulo) -> ProdutoView:
+    """Porta da frente (título-first): cola o título → extrai a identidade
+    canônica (marca/modelo/specs/categoria) e cadastra. Espelha o `rastrear` do CLI.
+
+    Extração pelo LLM (quando há chave) com fallback na heurística. Refinamentos
+    que o título não carrega (categoria override, preço de referência, palavras
+    de matching) entram por cima da identidade extraída."""
+    config = carregar_config()
+    ref = extrair_identidade_do_titulo(
+        dados.titulo,
+        nvidia_api_key=config.nvidia_api_key,
+        nvidia_base_url=config.nvidia_base_url,
+        nvidia_model=config.nvidia_model,
+    )
+    if ref is None:
+        raise HTTPException(400, "não deu pra identificar o produto por esse título")
+    produto = ref.para_produto()  # Produto é frozen; refinamentos via replace
+    produto = replace(
+        produto,
+        categoria=dados.categoria or produto.categoria,
+        preco_referencia=_dinheiro_opcional(dados.preco_referencia)
+        or produto.preco_referencia,
+        palavras_obrigatorias=tuple(dados.palavras_obrigatorias),
+        palavras_proibidas=tuple(dados.palavras_proibidas),
+    )
+    con, _ = _abrir()
+    try:
+        return _produto_view(RepositorioProdutoSQLite(con).salvar(produto, CONTA_PADRAO))
+    finally:
+        con.close()
+
+
 @app.delete("/api/produtos/{produto_id}", status_code=204)
 def arquivar_produto(produto_id: int) -> None:
     """Arquiva o produto (RF17) — some da lista, histórico preservado."""
@@ -209,6 +294,7 @@ def buscar_agora(produto_id: int) -> ProdutoDetalhe:
             repo_produto=RepositorioProdutoSQLite(con),
             repo_sku=RepositorioSKUSQLite(con),
             repo_snapshot=RepositorioSnapshotSQLite(con),
+            classificador=_classificador(config),
         )
         try:
             resultado = asyncio.run(
@@ -216,13 +302,36 @@ def buscar_agora(produto_id: int) -> ProdutoDetalhe:
             )
         except ProdutoInexistente as e:
             raise HTTPException(404, str(e)) from e
-        # Lê de volta do banco: mesma forma/ordem do GET, já com o timestamp.
+        # Lê de volta do banco: mesma forma/ordem do GET, já com o timestamp. O
+        # flag "preço confirmado" não é persistido, então vem do ranking (por loja).
+        ofertas = _ofertas_guardadas(con, produto_id)
+        confirmacao = {o.loja: o.preco_confirmado for o in resultado.ranking}
+        for oferta in ofertas:
+            oferta.preco_confirmado = confirmacao.get(oferta.loja, True)
         return ProdutoDetalhe(
             produto=_produto_view(resultado.produto),
-            ofertas=_ofertas_guardadas(con, produto_id),
+            ofertas=ofertas,
+            diagnostico=_diagnostico_view(resultado),
         )
     finally:
         con.close()
+
+
+def _diagnostico_view(resultado: ResultadoBusca) -> DiagnosticoView:
+    """Traduz o funil do maestro (em revisão + descartadas) pra JSON."""
+    def triar(itens: list[OfertaTriada]) -> list[OfertaTriadaView]:
+        return [
+            OfertaTriadaView(
+                loja=i.loja, titulo=i.titulo, motivo=i.motivo,
+                etapa=i.etapa, score=i.score,
+            )
+            for i in itens
+        ]
+
+    return DiagnosticoView(
+        em_revisao=triar(resultado.em_revisao_itens),
+        descartadas=triar(resultado.descartadas_itens),
+    )
 
 
 def _ofertas_guardadas(con: sqlite3.Connection, produto_id: int) -> list[OfertaView]:

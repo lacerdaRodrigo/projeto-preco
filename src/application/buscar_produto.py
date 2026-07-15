@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from application.classificadores import ClassificadorIdentidade, VereditoIdentidade
 from application.coletores import Coletor, ErroColetor, LojaIndisponivel
 from application.repositorios import (
     RepositorioProduto,
@@ -28,7 +29,7 @@ from domain import (
     SnapshotPreco,
     calcular_preco_final,
 )
-from domain.matching import ConfigMatching, Destino, casar
+from domain.matching import ConfigMatching, Destino, Etapa, ResultadoMatch, casar
 
 
 class ProdutoInexistente(Exception):
@@ -45,6 +46,19 @@ class OfertaRankeada:
     preco_final: Decimal
     em_estoque: bool
     score_match: float
+    # False = preço de vitrine (Google Shopping), não confirmado na página da loja.
+    preco_confirmado: bool = True
+
+
+@dataclass(frozen=True)
+class OfertaTriada:
+    """Uma oferta que NÃO entrou no ranking, com o porquê — pra ver o funil."""
+
+    loja: str
+    titulo: str
+    motivo: str  # legível ("modelo diferente…", "acessório/peça: 'mouse'")
+    etapa: str  # qual portão decidiu (modelo, atributo, veto, similaridade)
+    score: float
 
 
 @dataclass(frozen=True)
@@ -57,6 +71,9 @@ class ResultadoBusca:
     descartadas: int
     lojas_indisponiveis: list[str]  # falha transitória → dá pra tentar de novo
     lojas_degradadas: list[str]  # coletor quebrado (RN12) → não gravou nada
+    # O funil visível: cada oferta que ficou de fora, com o motivo (§14).
+    em_revisao_itens: list[OfertaTriada] = field(default_factory=list)
+    descartadas_itens: list[OfertaTriada] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -86,6 +103,7 @@ class BuscarProduto:
         repo_sku: RepositorioSKU,
         repo_snapshot: RepositorioSnapshot,
         config_matching: ConfigMatching | None = None,
+        classificador: ClassificadorIdentidade | None = None,
         agora: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._coletores = coletores
@@ -93,6 +111,8 @@ class BuscarProduto:
         self._skus = repo_sku
         self._snapshots = repo_snapshot
         self._config = config_matching
+        # O juiz de identidade (IA). Ausente → matching 100% determinístico.
+        self._classificador = classificador
         self._agora = agora  # injetável para testes deterministas
 
     async def executar(
@@ -109,25 +129,42 @@ class BuscarProduto:
             *(self._coletar_seguro(c, descricao, cep) for c in self._coletores)
         )
 
-        # 3. Casa cada oferta. As aceitas vão pra um balde POR LOJA DE ORIGEM — o
-        #    SKU é 1 por loja (RN01). Um agregador (Google Shopping) traz N lojas
-        #    numa busca só, então a identidade vem da loja de origem, não do coletor.
+        # 3. Junta todas as ofertas (com a loja de origem). Casa cada uma pelo
+        #    determinístico — o PISO/fallback — e, em UMA chamada, deixa a IA
+        #    arbitrar a identidade (mesmo produto?). A IA manda na zona ambígua;
+        #    os sinais certos (EAN bate, veto do usuário/acessório) o determinístico
+        #    ainda decide. Sem IA, tudo cai no determinístico de sempre.
+        itens = [
+            (coleta.coletor, oferta, _loja_de_origem(coleta.coletor, oferta))
+            for coleta in coletas
+            for oferta in coleta.ofertas
+        ]
+        ofertas = [oferta for _, oferta, _ in itens]
+        decisoes = [casar(produto, oferta, self._config) for oferta in ofertas]
+        vereditos = await self._vereditos_ia(produto, ofertas, decisoes)
+
+        # As aceitas vão pra um balde POR LOJA DE ORIGEM — o SKU é 1 por loja
+        # (RN01). Um agregador (Google Shopping) traz N lojas numa busca só, então
+        # a identidade vem da loja de origem, não do coletor.
         aceitas: dict[tuple[int, str], list[_Candidata]] = {}
-        em_revisao = descartadas = 0
-        for coleta in coletas:
-            for oferta in coleta.ofertas:
-                decisao = casar(produto, oferta, self._config)
-                if decisao.destino is Destino.REVISAR:
-                    em_revisao += 1
-                elif decisao.destino is Destino.DESCARTA:
-                    descartadas += 1
-                else:
-                    loja_origem = _loja_de_origem(coleta.coletor, oferta)
-                    candidata = _Candidata(
-                        coleta.coletor, oferta, decisao.score, loja_origem
-                    )
-                    chave = (coleta.coletor.loja_id, loja_origem)
-                    aceitas.setdefault(chave, []).append(candidata)
+        em_revisao_itens: list[OfertaTriada] = []
+        descartadas_itens: list[OfertaTriada] = []
+        for (coletor, oferta, loja_origem), decisao, veredito in zip(
+            itens, decisoes, vereditos
+        ):
+            destino, score, motivo, etapa = _decidir(decisao, veredito)
+            if destino is Destino.REVISAR:
+                em_revisao_itens.append(
+                    OfertaTriada(loja_origem, oferta.titulo, motivo, etapa, round(score, 4))
+                )
+            elif destino is Destino.DESCARTA:
+                descartadas_itens.append(
+                    OfertaTriada(loja_origem, oferta.titulo, motivo, etapa, round(score, 4))
+                )
+            else:
+                candidata = _Candidata(coletor, oferta, score, loja_origem)
+                chave = (coletor.loja_id, loja_origem)
+                aceitas.setdefault(chave, []).append(candidata)
 
         # 4–5. Por loja, escolhe a MELHOR oferta e grava (SKU + snapshot idempotente).
         ranking = [
@@ -138,14 +175,50 @@ class BuscarProduto:
         # Ranking: em estoque primeiro, depois pelo menor preço final (§16).
         ranking.sort(key=lambda o: (not o.em_estoque, o.preco_final))
 
+        # Funil sem repetição: a mesma loja+título aparecia N vezes (o agregador
+        # devolve o produto em várias posições) — mostra uma só.
+        em_revisao_itens = _sem_repetir(em_revisao_itens)
+        descartadas_itens = _sem_repetir(descartadas_itens)
+
         return ResultadoBusca(
             produto=produto,
             ranking=ranking,
-            em_revisao=em_revisao,
-            descartadas=descartadas,
+            em_revisao=len(em_revisao_itens),
+            descartadas=len(descartadas_itens),
             lojas_indisponiveis=[c.coletor.nome for c in coletas if c.status == "indisponivel"],
             lojas_degradadas=[c.coletor.nome for c in coletas if c.status == "degradado"],
+            em_revisao_itens=em_revisao_itens,
+            descartadas_itens=descartadas_itens,
         )
+
+    async def _vereditos_ia(
+        self,
+        produto: Produto,
+        ofertas: list[OfertaBruta],
+        decisoes: list[ResultadoMatch],
+    ) -> list[VereditoIdentidade | None]:
+        """A IA classifica, em UMA chamada, só as ofertas da ZONA AMBÍGUA — as que
+        o determinístico resolveu por EAN ou veto ficam de fora (a IA não muda
+        isso e mandá-las só engorda o lote). Roda fora do event loop (adaptador
+        síncrono). Sem classificador → sem opinião (tudo `None`)."""
+        vereditos: list[VereditoIdentidade | None] = [None] * len(ofertas)
+        if self._classificador is None:
+            return vereditos
+        alvos = [
+            (i, oferta)
+            for i, (oferta, decisao) in enumerate(zip(ofertas, decisoes))
+            if decisao.etapa not in (Etapa.EAN, Etapa.VETO)
+        ]
+        if not alvos:
+            return vereditos
+        saida = await asyncio.to_thread(
+            self._classificador.classificar, produto, [oferta for _, oferta in alvos]
+        )
+        if len(saida) != len(alvos):  # guarda: contrato garante alinhamento
+            return vereditos
+        for (i, _), veredito in zip(alvos, saida):
+            vereditos[i] = veredito
+        return vereditos
 
     async def _coletar_seguro(
         self, coletor: Coletor, descricao: str, cep: str | None
@@ -202,6 +275,7 @@ class BuscarProduto:
             preco_final=_preco_final_de(oferta),
             em_estoque=oferta.em_estoque,
             score_match=candidata.score,
+            preco_confirmado=oferta.preco_confirmado,
         )
 
 
@@ -215,6 +289,38 @@ def _loja_de_origem(coletor: Coletor, oferta: OfertaBruta) -> str:
     if getattr(coletor, "agrega_lojas", False) and oferta.vendedor:
         return oferta.vendedor
     return coletor.nome
+
+
+def _decidir(
+    decisao: ResultadoMatch, veredito: VereditoIdentidade | None
+) -> tuple[Destino, float, str, str]:
+    """Combina o determinístico com a IA → (destino, score, motivo, etapa).
+
+    Sinais CERTOS o determinístico mantém: EAN bate (é o produto) e vetos (palavra
+    proibida/obrigatória do usuário, ou acessório/peça). Na zona ambígua de
+    identidade (modelo/capacidade/similaridade), a IA arbitra quando tem opinião;
+    sem IA (ou sem opinião), vale a decisão determinística — o piso de sempre.
+    """
+    if decisao.etapa in (Etapa.EAN, Etapa.VETO):
+        return decisao.destino, decisao.score, decisao.motivo, decisao.etapa.value
+    if veredito is not None:
+        if veredito.mesmo:
+            return Destino.ACEITA, max(decisao.score, 0.9), f"IA: {veredito.motivo}", "ia"
+        return Destino.DESCARTA, 0.0, f"IA: {veredito.motivo}", "ia"
+    return decisao.destino, decisao.score, decisao.motivo, decisao.etapa.value
+
+
+def _sem_repetir(itens: list[OfertaTriada]) -> list[OfertaTriada]:
+    """Tira duplicatas do funil pela chave loja+título (o agregador repete)."""
+    vistos: set[tuple[str, str]] = set()
+    unicos: list[OfertaTriada] = []
+    for item in itens:
+        chave = (item.loja, item.titulo)
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        unicos.append(item)
+    return unicos
 
 
 def _melhor(candidatas: list[_Candidata]) -> _Candidata:
@@ -236,15 +342,39 @@ def _preco_final_de(oferta: OfertaBruta) -> Decimal:
     )
 
 
+# Categorias onde marca+modelo NÃO basta pra desambiguar: um notebook "Asus A15"
+# casa com dezenas de configs. Aí a query leva também o discriminador forte (GPU)
+# — sem virar a string verbosa inteira, que over-constringe.
+_CATEGORIAS_COM_SPEC_NA_BUSCA = frozenset({"notebook"})
+# Ordem de specs a acrescentar na busca (a GPU separa variantes de gamer melhor
+# que RAM/armazenamento; o armazenamento entra como reforço).
+_SPECS_NA_BUSCA = ("gpu", "armazenamento")
+
+
 def _descricao_de(produto: Produto) -> str:
     """Monta o texto de busca (§4).
 
     Com âncora (marca + modelo), consulta ENXUTA por ela ("Motorola Moto G67") —
     a string verbosa inteira over-constringe: nenhuma loja titula igual, então
-    buscar o título todo devolve pouco ou nada. Sem âncora (ex.: móvel sem
-    part-number), cai no nome completo, que é o que identifica o produto.
+    buscar o título todo devolve pouco ou nada. Em categorias onde o modelo é uma
+    série ambígua (notebook: "Asus A15"), acrescenta o discriminador forte (GPU)
+    pra achar a config certa. Sem âncora, cai no nome completo.
     """
     if produto.marca and produto.modelo:
-        return f"{produto.marca} {produto.modelo}"
+        base = f"{produto.marca} {produto.modelo}"
+        extra = _discriminadores(produto)
+        return f"{base} {extra}".strip() if extra else base
     partes = [produto.nome, produto.marca or "", produto.modelo or ""]
     return " ".join(p for p in partes if p).strip()
+
+
+def _discriminadores(produto: Produto) -> str:
+    """Specs-chave que entram na busca pra desambiguar (só nas categorias que
+    precisam; só o que o extrator gravou em `atributos`)."""
+    if produto.categoria not in _CATEGORIAS_COM_SPEC_NA_BUSCA:
+        return ""
+    return " ".join(
+        produto.atributos[chave]
+        for chave in _SPECS_NA_BUSCA
+        if produto.atributos.get(chave)
+    )

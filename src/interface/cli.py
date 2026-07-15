@@ -19,11 +19,16 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from adapters.classificadores import ClassificadorLLM
 from adapters.coletores.google_shopping import ColetorGoogleShopping
 from adapters.coletores.kabum import ColetorKabum
 from adapters.coletores.sandbox import ColetorSandbox
 from adapters.coletores.vtex import lojas_vtex_padrao
-from adapters.extratores import LeitorDePagina, extrair_do_slug, extrair_do_titulo
+from adapters.extratores import (
+    LeitorDePagina,
+    extrair_do_slug,
+    extrair_identidade_do_titulo,
+)
 from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
@@ -127,7 +132,13 @@ def rastrear(
         with console.status("[bold]Lendo a página do produto...[/]"):
             ref = asyncio.run(LeitorDePagina().ler(url))
     if ref is None and titulo:
-        ref = extrair_do_titulo(titulo)
+        cfg = carregar_config()
+        ref = extrair_identidade_do_titulo(
+            titulo,
+            nvidia_api_key=cfg.nvidia_api_key,
+            nvidia_base_url=cfg.nvidia_base_url,
+            nvidia_model=cfg.nvidia_model,
+        )
     if ref is None and url:
         ref = extrair_do_slug(url)
         if ref is not None:
@@ -269,11 +280,21 @@ def buscar(
             )
             raise typer.Exit(code=1)
         coletores = [ColetorGoogleShopping(config.serper_api_key)]
+    classificador = (
+        ClassificadorLLM(
+            config.nvidia_api_key,
+            config.nvidia_base_url,
+            config.nvidia_model_classificador,
+        )
+        if config.nvidia_api_key
+        else None
+    )
     caso_de_uso = BuscarProduto(
         coletores=coletores,
         repo_produto=RepositorioProdutoSQLite(con),
         repo_sku=RepositorioSKUSQLite(con),
         repo_snapshot=RepositorioSnapshotSQLite(con),
+        classificador=classificador,
     )
     try:
         with console.status("[bold]Buscando nas lojas...[/]"):
@@ -321,6 +342,7 @@ def _mostrar_ranking(resultado: ResultadoBusca) -> None:
         f"\n[dim]em revisão: {resultado.em_revisao} · "
         f"descartadas: {resultado.descartadas}[/]"
     )
+    _mostrar_funil(resultado)
     if resultado.lojas_indisponiveis:
         console.print(
             f"[yellow]não responderam (instabilidade ou bloqueio de IP — tente do "
@@ -331,6 +353,28 @@ def _mostrar_ranking(resultado: ResultadoBusca) -> None:
             f"[red]resposta inesperada (mudança de formato ou anti-bot): "
             f"{', '.join(resultado.lojas_degradadas)}[/]"
         )
+
+
+def _mostrar_funil(resultado: ResultadoBusca) -> None:
+    """Mostra POR QUE cada loja ficou de fora — o funil deixa de ser invisível."""
+    if resultado.em_revisao_itens:
+        tabela = Table(title="Em revisão (quase bateu — confira)")
+        tabela.add_column("Loja")
+        tabela.add_column("Score", justify="right", style="dim")
+        tabela.add_column("Título")
+        tabela.add_column("Motivo", style="yellow")
+        for i in resultado.em_revisao_itens:
+            tabela.add_row(i.loja, f"{i.score:.2f}", i.titulo[:40], i.motivo)
+        console.print(tabela)
+
+    if resultado.descartadas_itens:
+        # Agrupa por motivo pra não despejar centenas de linhas — só o resumo.
+        tally: dict[str, int] = {}
+        for i in resultado.descartadas_itens:
+            tally[i.motivo] = tally.get(i.motivo, 0) + 1
+        linhas = sorted(tally.items(), key=lambda kv: kv[1], reverse=True)
+        resumo = " · ".join(f"{motivo} ({n})" for motivo, n in linhas[:6])
+        console.print(f"[dim]descartadas por motivo: {resumo}[/]")
 
 
 if __name__ == "__main__":

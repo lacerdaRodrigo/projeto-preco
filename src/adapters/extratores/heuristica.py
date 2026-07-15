@@ -37,7 +37,10 @@ _MARCAS: dict[str, str] = {
 # "Galaxy S24", "Aspire A515..."). Se aparecerem coladas ao token, entram no modelo.
 _LINHAS: frozenset[str] = frozenset(
     {"moto", "galaxy", "redmi", "poco", "aspire", "ideapad", "inspiron", "vivobook",
-     "zenbook", "nitro", "predator", "edge", "note", "book"}
+     "zenbook", "nitro", "predator", "edge", "note", "book",
+     # linhas de notebook/gamer (o número sozinho — "a15", "g15" — não identifica).
+     "tuf", "gaming", "dash", "rog", "strix", "victus", "omen", "pavilion",
+     "legion", "thinkpad", "katana", "cyborg", "modern", "swift"}
 )
 
 # Categoria → nome que o matcher já configura (só essas têm portão de capacidade).

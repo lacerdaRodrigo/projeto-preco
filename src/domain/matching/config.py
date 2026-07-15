@@ -19,6 +19,12 @@ class ConfigMatching:
     limiar_aceita: float = 0.85
     limiar_revisar: float = 0.6
 
+    # Categorias onde o modelo-linha É o SKU definitivo (G67 ≠ G17): se o token do
+    # modelo não aparece na oferta, é OUTRO produto → DESCARTA duro. Nas demais
+    # (notebook: "A15" é série, não config), a ausência não decide — cai na
+    # similaridade, que pode mandar pra REVISAR em vez de sumir em silêncio.
+    categorias_modelo_forte: frozenset[str] = frozenset({"celular"})
+
     # Traduções de cor (inglês → português) para "black" e "preto" casarem.
     cores: dict[str, str] = field(
         default_factory=lambda: {

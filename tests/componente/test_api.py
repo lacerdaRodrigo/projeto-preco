@@ -12,6 +12,10 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'api.db'}")
+    # Sem LLM no teste: o /rastrear usa a heurística (offline, determinístico).
+    # Nunca bater em serviço real — a extração por LLM é testada com mock em
+    # test_extrator_llm.py.
+    monkeypatch.setenv("NVIDIA_API_KEY", "")
     from interface.api import app
 
     return TestClient(app)
@@ -51,6 +55,43 @@ def test_preco_referencia_invalido_da_400(client):
         "/api/produtos",
         json={"nome": "X", "categoria": "y", "preco_referencia": "abc"},
     )
+    assert resp.status_code == 400
+
+
+def test_rastrear_por_titulo_extrai_identidade(client):
+    """Entrada título-first: cola o título, o backend extrai marca/modelo/categoria."""
+    resp = client.post(
+        "/api/rastrear",
+        json={"titulo": "Smartphone Motorola Moto G67 5G 256GB 8GB RAM"},
+    )
+    assert resp.status_code == 201
+    criado = resp.json()
+    assert criado["nome"] == "Smartphone Motorola Moto G67 5G 256GB 8GB RAM"
+    assert criado["marca"] == "Motorola"
+    assert criado["modelo"] == "Moto G67"
+    # entra na lista de monitorados como qualquer produto
+    assert [p["id"] for p in client.get("/api/produtos").json()] == [criado["id"]]
+
+
+def test_rastrear_aplica_refinamentos_opcionais(client):
+    """Preço de referência (BR) e palavras não vêm do título — entram por cima."""
+    criado = client.post(
+        "/api/rastrear",
+        json={
+            "titulo": "Notebook Dell Inspiron 15",
+            "categoria": "informatica",
+            "preco_referencia": "3.499,90",
+            "palavras_obrigatorias": ["Inspiron", "15"],
+            "palavras_proibidas": ["usado"],
+        },
+    ).json()
+    assert criado["categoria"] == "informatica"  # sobrescreve a detectada
+    assert criado["preco_referencia"] == "3499.90"
+    assert criado["palavras_obrigatorias"] == ["Inspiron", "15"]
+
+
+def test_rastrear_titulo_vazio_da_400(client):
+    resp = client.post("/api/rastrear", json={"titulo": "   "})
     assert resp.status_code == 400
 
 

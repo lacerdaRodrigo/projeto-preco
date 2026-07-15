@@ -22,10 +22,10 @@ python3 -m venv .venv
 
 ## Regras que não posso quebrar
 - **Nunca** compra automática nem preenche checkout.
-- Preço comparado = **preço final** = item + frete − cupom − cashback (nunca só vitrine).
+- Preço comparado = **preço final** = item + frete − cupom − cashback. Preferir preço **confirmado** na página da loja; quando não dá pra confirmar (loja bloqueia), usar o preço de vitrine do Google Shopping **marcado** `preco_confirmado=False` (a UI avisa) — mostrar a loja BR marcada é melhor que sumir com ela. Nunca vitrine **sem marcar**.
 - Núcleo (`domain/`, `application/`) não importa rede, BD nem UI.
 - Cada loja é um **coletor plugável** (`adapters/coletores/`), mesma interface; não acoplar loja ao núcleo.
-- Só comparar ofertas com score de matching ≥ 0.85.
+- **Identidade quem valida é a IA** (classificador plugável atrás de porta, `application/classificadores.py`): dado o produto-alvo × ofertas, decide "é o mesmo produto?" (marca+linha+modelo/geração; ignora specs como cor/bateria). Sem distinção por categoria no backend. Sem chave IA → cai no matcher determinístico (score de similaridade, corte RN04 0.85). O limiar é fallback, não o validador — **não baixar** pra "achar mais": score mede palavra igual, não produto certo. Ver [[ia-valida-identidade-e-lojas-br]].
 - Todo preço rastreável (URL + timestamp). Idempotente: rodar 2x não duplica.
 - Preferir API oficial > scraping. Respeitar robots.txt/ToS e rate-limit por loja.
 - Multiusuário (eu + noiva): todo dado isolado por `conta_id` (RN16); esse isolamento é teste de **segurança**, não só de dados.

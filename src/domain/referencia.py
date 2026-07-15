@@ -11,7 +11,7 @@ adaptador em `adapters/extratores/`; aqui só mora o formato e a conversão para
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from domain.produto import Produto
@@ -39,6 +39,9 @@ class ReferenciaProduto:
     modelo: str | None = None  # part number do fabricante (MPN), quando há
     cor: str | None = None
     categoria: str | None = None  # da página (breadcrumb), quando há
+    # Specs-chave que ajudam busca e matching (ex.: {"gpu": "RTX 3050",
+    # "armazenamento": "512GB", "ram": "16GB"}). Vazio quando o extrator não sabe.
+    atributos: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Sem título não há identidade — o extrator devolve None nesse caso, então
@@ -56,4 +59,5 @@ class ReferenciaProduto:
             ean=self.ean,
             cor=self.cor,
             preco_referencia=self.preco,
+            atributos=dict(self.atributos),
         )

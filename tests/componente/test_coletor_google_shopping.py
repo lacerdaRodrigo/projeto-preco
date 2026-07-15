@@ -11,7 +11,11 @@ import respx
 
 from adapters.coletores.google_shopping import (
     ColetorGoogleShopping,
+    _ancora,
+    _e_dominio_br,
     _e_link_de_produto,
+    _loja_br_conhecida,
+    _loja_plausivelmente_br,
     _extrair_da_pagina,
     _extrair_preco,
     _limpar_url,
@@ -108,17 +112,20 @@ def test_verifica_link_preco_e_nome_na_pagina_do_produto():
     )
     respx.get(direto).mock(return_value=httpx.Response(200, html=_HTML_COM_PRECO))
     ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
-    # Só o Zoom casou (domínio) e teve preço confirmado na página.
-    assert [o.vendedor for o in ofertas] == ["Zoom"]
-    assert ofertas[0].url == direto
-    assert ofertas[0].preco == Decimal("449.90")  # preço da PÁGINA, não do Google
-    assert ofertas[0].titulo == "Echo Dot 5 Geração"  # nome da PÁGINA
+    # O Zoom resolveu a página BR (domínio casa) → preço CONFIRMADO da página.
+    zoom = next(o for o in ofertas if o.vendedor == "Zoom")
+    assert zoom.url == direto
+    assert zoom.preco == Decimal("449.90")  # preço da PÁGINA, não do Google
+    assert zoom.titulo == "Echo Dot 5 Geração"  # nome da PÁGINA
+    assert zoom.preco_confirmado is True
+    # As renomadas BR que não resolveram página não somem: entram como vitrine.
+    assert any(o.vendedor == "KaBuM!" and o.preco_confirmado is False for o in ofertas)
 
 
 @respx.mock
-def test_pagina_sem_preco_descarta_loja():
-    # httpx achou a página mas sem preço, e sem scrape → descarta (preço tem que
-    # ser confirmado; nada de vitrine aproximada).
+def test_pagina_br_sem_preco_vira_vitrine():
+    # Achou a página BR mas sem preço, e sem scrape → NÃO some: entra com o preço
+    # de vitrine do Google Shopping, marcado (a página .br já verifica que é BR).
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
     direto = "https://www.zoom.com.br/produto/echo-dot-5-alexa"
     respx.post(_URL_ORGANICA).mock(
@@ -127,7 +134,10 @@ def test_pagina_sem_preco_descarta_loja():
     respx.get(direto).mock(return_value=httpx.Response(200, html="<html>sem preço</html>"))
     coletor = ColetorGoogleShopping("chave-fake", usar_scrape=False)
     ofertas = asyncio.run(coletor.buscar("echo dot 5"))
-    assert ofertas == []
+    zoom = next(o for o in ofertas if o.vendedor == "Zoom")
+    assert zoom.preco_confirmado is False
+    assert zoom.preco == Decimal("443.33")  # preço de vitrine do Google Shopping
+    assert zoom.url == direto  # a página BR foi resolvida mesmo assim
 
 
 _SCRAPE_JSONLD = {
@@ -160,8 +170,9 @@ def test_loja_bloqueada_confirma_preco_via_scrape():
 
 
 @respx.mock
-def test_scrape_sem_preco_descarta():
-    # Scrape também não achou preço (ex.: página de login) → descarta a loja.
+def test_scrape_sem_preco_vira_vitrine():
+    # Página BR achada, mas nem httpx nem scrape leram preço (ex.: tela de login)
+    # → não some: vira vitrine (marcada).
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
     direto = "https://www.zoom.com.br/produto/echo-dot-5-alexa"
     respx.post(_URL_ORGANICA).mock(
@@ -172,28 +183,38 @@ def test_scrape_sem_preco_descarta():
         return_value=httpx.Response(200, json={"text": "Faça login", "metadata": {}})
     )
     ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
-    assert [o for o in ofertas if o.vendedor == "Zoom"] == []
+    zoom = next(o for o in ofertas if o.vendedor == "Zoom")
+    assert zoom.preco_confirmado is False
+    assert zoom.preco == Decimal("443.33")
 
 
 @respx.mock
-def test_lista_de_busca_e_descartada():
-    # Se o orgânico for uma LISTA (vários produtos), a loja é descartada.
+def test_pagina_nao_resolve_loja_br_conhecida_vira_vitrine():
+    # Orgânico não acha a página do produto (só lista/categoria). Loja BR RENOMADA
+    # não some: entra como VITRINE (a IA valida a identidade depois). Sem isto,
+    # produto pouco indexado voltava 0 loja. Comparador/loja desconhecida fica fora.
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
     lista = "https://www.zoom.com.br/smart-speaker"  # categoria, não produto
     respx.post(_URL_ORGANICA).mock(
         return_value=httpx.Response(200, json={"organic": [{"link": lista}]})
     )
     ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
-    assert ofertas == []  # nenhuma virou página de produto
+    lojas = {o.vendedor for o in ofertas}
+    assert "KaBuM!" in lojas and "Carrefour" in lojas  # renomadas entram
+    assert "Zoom" not in lojas  # comparador, não é loja → fora
+    assert all(o.preco_confirmado is False for o in ofertas)  # todas vitrine
 
 
 @respx.mock
-def test_resolucao_falha_descarta_loja():
-    # Falha na resolução → não traz link ruim: descarta a loja.
+def test_sem_pagina_e_loja_desconhecida_fica_de_fora():
+    # Resolução falha (500) para todas. Loja BR conhecida entra como vitrine; loja
+    # fora da lista (provável estrangeira: eBay/Amazon-EUA/asus.com) fica de fora.
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
     respx.post(_URL_ORGANICA).mock(return_value=httpx.Response(500))
     ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
-    assert ofertas == []
+    lojas = {o.vendedor for o in ofertas}
+    assert "KaBuM!" in lojas and "Carrefour" in lojas and "Mercado Livre" in lojas
+    assert "Zoom" not in lojas
 
 
 def test_extrair_preco():
@@ -234,13 +255,51 @@ def test_limpar_url_tira_rastreio():
     assert _limpar_url(com_sku) == com_sku
 
 
+def test_ancora_encurta_a_query_de_resolucao():
+    # A resolução do link usa só a âncora (marca+modelo), não as specs — senão o
+    # orgânico não acha a página do produto.
+    assert _ancora("Asus TUF Gaming A15 RTX 3050 512GB") == "Asus TUF Gaming A15"
+    assert _ancora("Motorola Moto G67") == "Motorola Moto G67"
+
+
+def test_loja_br_conhecida_reconhece_renomadas():
+    assert _loja_br_conhecida("Casas Bahia - Seller")  # substring + sufixo
+    assert _loja_br_conhecida("KaBuM!")
+    assert _loja_br_conhecida("Magazine Luiza")
+    assert _loja_br_conhecida("Carrefour")
+    assert not _loja_br_conhecida("Zoom")  # comparador, não é loja
+    assert not _loja_br_conhecida("eBay")  # estrangeira
+    assert not _loja_br_conhecida("Desertcart")
+    assert not _loja_br_conhecida(None)
+
+
+def test_loja_plausivelmente_br_barra_nome_estrangeiro():
+    assert _loja_plausivelmente_br("KaBuM!")
+    assert _loja_plausivelmente_br("Casas Bahia")
+    assert _loja_plausivelmente_br("Amazon.com.br - Retail")
+    assert _loja_plausivelmente_br(None)  # sem nome → deixa o matcher julgar
+    assert not _loja_plausivelmente_br("Máy tính Tiến Tân")  # vietnamita (U+1EBF)
+
+
+def test_e_dominio_br_barra_loja_estrangeira():
+    # Conserta o Amazon: "Amazon.com.br" às vezes resolve pro amazon.com (EUA).
+    assert _e_dominio_br("https://www.amazon.com.br/Echo/dp/B09")
+    assert _e_dominio_br("https://www.kabum.com.br/produto/1/echo")
+    assert _e_dominio_br("https://produto.mercadolivre.com.br/MLB-123-echo-_JM")
+    assert not _e_dominio_br("https://www.amazon.com/Echo/dp/B09")  # EUA
+    assert not _e_dominio_br("https://maytinh.example.vn/p/1")  # estrangeira
+
+
 def test_e_link_de_produto():
     assert _e_link_de_produto("https://www.kabum.com.br/produto/460471/echo")
     assert _e_link_de_produto("https://loja.com.br/echo-dot-5-preto-123/p")
     assert _e_link_de_produto("https://www.amazon.com.br/Echo/dp/B09B8VGCR8")
+    assert _e_link_de_produto("https://www.amazon.com.br/gp/product/B09B8VGCR8")
     # Mercado Livre (/p/MLB...) e Magazine Luiza (/p/241.../) → são produto:
     assert _e_link_de_produto("https://www.mercadolivre.com.br/echo-dot/p/MLB123")
     assert _e_link_de_produto("https://www.magazineluiza.com.br/echo/p/241203500/te/")
+    # Mercado Livre forma clássica (/MLB-...-_JM, sem /p/) — a maioria das ofertas:
+    assert _e_link_de_produto("https://produto.mercadolivre.com.br/MLB-123456789-echo-dot-5-_JM")
     # Listas/buscas → não são produto:
     assert not _e_link_de_produto("https://lista.mercadolivre.com.br/echo-dot-5")
     assert not _e_link_de_produto("https://br.ebay.com/b/Amazon-Echo-Dot/184435")

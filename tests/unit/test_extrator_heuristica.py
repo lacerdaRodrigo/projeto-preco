@@ -53,6 +53,16 @@ def test_titulo_de_slug_minusculo_tambem_funciona():
     assert ident.categoria == "celular"
 
 
+def test_notebook_gamer_junta_a_linha_gaming():
+    # "gaming"/"tuf" agora são linhas: o número sozinho ("a15") não identifica.
+    ident = extrair_identidade(
+        "Notebook Asus Tuf Gaming A15 3050 Ryzen 7 16gb 512gb Linux"
+    )
+    assert ident.marca == "Asus"
+    assert ident.modelo == "Gaming A15"
+    assert ident.categoria == "notebook"
+
+
 @pytest.mark.parametrize("titulo", ["", "produto sem marca nem modelo conhecidos", "aro 29 preto"])
 def test_sem_ancora_devolve_tudo_none(titulo):
     ident = extrair_identidade(titulo)

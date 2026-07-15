@@ -121,9 +121,24 @@ export default function Dashboard() {
               <div className="linha1">
                 <span className="loja">{o.loja}</span>
                 {ehMenor && <span className="melhor">● mais barato</span>}
+                {!o.em_estoque && (
+                  <span className="badge" style={{ color: "var(--vermelho)" }}>fora de estoque</span>
+                )}
                 <span className="preco">{reais(preco)}</span>
               </div>
-              <div className="titulo">{o.titulo}</div>
+              <div className="titulo">
+                {o.titulo}
+                {typeof o.score_match === "number" && (
+                  <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                    · match {o.score_match.toFixed(2)}
+                  </span>
+                )}
+                {o.preco_confirmado === false && (
+                  <span style={{ marginLeft: 8, opacity: 0.7 }} title="Preço listado no Google Shopping; pode variar na loja.">
+                    · preço de vitrine
+                  </span>
+                )}
+              </div>
               <div className="barra">
                 <span style={{ width: `${largura}%`, background: abaixoRef ? "var(--verde)" : undefined }} />
                 {refPct !== null && <i className="ref-linha" style={{ left: `${refPct}%` }} />}
@@ -136,6 +151,54 @@ export default function Dashboard() {
           );
         })}
       </div>
+
+      <Funil diagnostico={dados.diagnostico} />
     </main>
+  );
+}
+
+// O funil visível: por que as outras lojas ficaram de fora. Acaba com o ponto
+// cego (loja que apareceu na busca mas não bateu certeza some sem explicação).
+function Funil({ diagnostico }) {
+  if (!diagnostico) return null;
+  const emRevisao = diagnostico.em_revisao || [];
+  const descartadas = diagnostico.descartadas || [];
+  if (emRevisao.length === 0 && descartadas.length === 0) return null;
+
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0, fontSize: 18 }}>Por que outras lojas ficaram de fora</h2>
+
+      {emRevisao.length > 0 && (
+        <details open>
+          <summary>Em revisão ({emRevisao.length}) — quase bateu, confira</summary>
+          {emRevisao.map((o, i) => (
+            <div className="oferta" key={i}>
+              <div className="linha1">
+                <span className="loja">{o.loja}</span>
+                <span className="titulo" style={{ marginLeft: 8 }}>
+                  match {Number(o.score).toFixed(2)}
+                </span>
+              </div>
+              <div className="titulo">{o.titulo}</div>
+              <div className="titulo" style={{ color: "var(--amarelo, #b58900)" }}>{o.motivo}</div>
+            </div>
+          ))}
+        </details>
+      )}
+
+      {descartadas.length > 0 && (
+        <details>
+          <summary>Descartadas ({descartadas.length}) — por quê</summary>
+          {descartadas.map((o, i) => (
+            <div className="oferta" key={i}>
+              <div className="linha1"><span className="loja">{o.loja}</span></div>
+              <div className="titulo">{o.titulo}</div>
+              <div className="titulo" style={{ opacity: 0.75 }}>{o.motivo}</div>
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
   );
 }

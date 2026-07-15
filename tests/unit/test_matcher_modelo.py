@@ -74,6 +74,32 @@ def test_linha_confirmada_com_capacidade_ok_aceita():
     assert r.etapa is Etapa.MODELO
 
 
+def test_notebook_modelo_ausente_nao_descarta_duro():
+    # Notebook: "A15" é série, não SKU. Se o token não aparece no título, NÃO
+    # descarta no portão — cai na similaridade (pode ir pra revisão em vez de
+    # sumir). É o conserto do "só 2 lojas".
+    produto = Produto(
+        nome="Notebook Asus TUF Gaming A15 Ryzen 7 16GB 512GB RTX 3050",
+        categoria="notebook", marca="Asus", modelo="Gaming A15",
+        atributos={"capacidade": "512gb"},
+    )
+    r = casar(produto, _oferta(
+        "Notebook Gamer Asus TUF FA507NV Ryzen 7 16GB 512GB SSD RTX 3050"
+    ))
+    assert r.etapa is not Etapa.MODELO  # não matou no portão de modelo
+    assert r.etapa is Etapa.SIMILARIDADE  # quem decidiu foi a similaridade
+    assert r.destino in (Destino.ACEITA, Destino.REVISAR)  # sobreviveu
+
+
+def test_celular_modelo_ausente_ainda_descarta_duro():
+    # Contraste: em celular o modelo-linha É o SKU → ausência descarta (G85 ≠ G67).
+    produto = Produto(nome="Motorola Moto G67 256GB", categoria="celular",
+                      marca="Motorola", modelo="Moto G67")
+    r = casar(produto, _oferta("Motorola Moto G85 5G 256GB"))
+    assert r.destino is Destino.DESCARTA
+    assert r.etapa is Etapa.MODELO
+
+
 def test_modelo_presente_sem_a_linha_ainda_casa():
     # "Motorola G67" (sem a palavra "Moto") tem o número g67 → é o mesmo modelo.
     produto = Produto(nome="Motorola Moto G67 256GB", categoria="celular",

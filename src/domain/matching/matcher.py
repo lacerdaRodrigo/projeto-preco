@@ -118,9 +118,21 @@ def _checar_modelo(
         return None, False
     if all(t in titulo_norm.split() for t in nucleo):
         return None, True  # confirmado; a capacidade decide o armazenamento
-    return ResultadoMatch(
-        Destino.DESCARTA, 0.0, Etapa.MODELO, f"modelo diferente (não achei '{modelo}')"
-    ), False
+    # Token do modelo ausente. Em categoria de modelo forte (celular: G67 ≠ G17),
+    # é OUTRO produto → descarta. Nas demais (notebook), a série ("A15") não é o
+    # SKU: não decide aqui — segue pra similaridade (pode ir pra REVISAR).
+    if produto.categoria in cfg.categorias_modelo_forte:
+        return ResultadoMatch(
+            Destino.DESCARTA, 0.0, Etapa.MODELO,
+            f"modelo diferente (não achei '{modelo}')",
+        ), False
+    return None, False
+
+
+# Preposições que marcam "acessório PARA o produto" ("Mouse para Notebook A15").
+_PREPOSICOES_ACESSORIO = frozenset({"para", "pra", "p", "compativel", "compativeis"})
+# Palavras que só marcam brinde/combo — nunca são o produto anunciado.
+_MARCADORES_COMBO = frozenset({"brinde", "gratis", "gratuito", "acompanha", "ganhe"})
 
 
 def _checar_acessorio(
@@ -128,18 +140,32 @@ def _checar_acessorio(
 ) -> ResultadoMatch | None:
     """Oferta é acessório/peça do produto, não o produto → DESCARTA (§14).
 
-    A palavra de acessório ("refil", "mouse", "kit") na oferta vetada só quando
-    NÃO está no nome do meu produto — assim, se eu rastreio um refil, "refil" no
-    meu nome desarma o veto e o refil certo passa. Compara por token inteiro.
+    A palavra de acessório veta só quando é o SUJEITO da oferta (o que está à
+    venda): aparece no começo do título OU logo depois de "para"/"compatível"
+    ("Refil para Purificador PE12G", "Mouse para Notebook A15"). Quando ela vem
+    solta no meio como brinde de um combo ("Notebook Asus TUF A15 + Mouse Gamer
+    de brinde"), NÃO veta — o produto ali é o notebook. Também não veta quando a
+    palavra está no meu próprio nome (rastreio um refil → "refil" me desarma).
     """
-    tokens_oferta = set(titulo_norm.split())
+    tokens = titulo_norm.split()
     tokens_referencia = set(referencia_norm.split())
-    for palavra in cfg.vetos_acessorio:
-        if palavra in tokens_oferta and palavra not in tokens_referencia:
+    for i, palavra in enumerate(tokens):
+        if palavra not in cfg.vetos_acessorio or palavra in tokens_referencia:
+            continue
+        if _acessorio_e_sujeito(tokens, i):
             return ResultadoMatch(
                 Destino.DESCARTA, 0.0, Etapa.VETO, f"acessório/peça: '{palavra}'"
             )
     return None
+
+
+def _acessorio_e_sujeito(tokens: list[str], i: int) -> bool:
+    """A palavra de acessório em `tokens[i]` é o produto anunciado (não um brinde)?"""
+    if tokens[i] in _MARCADORES_COMBO:
+        return False  # palavra de brinde/combo nunca é o produto em si
+    if i <= 2:
+        return True  # acessório no começo do título = é o que está à venda
+    return tokens[i - 1] in _PREPOSICOES_ACESSORIO
 
 
 def _checar_vetos(

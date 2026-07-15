@@ -26,7 +26,12 @@ _HTML_NOTEBOOK = """<html><head>
 
 
 def _env(tmp_path):
-    return {"DATABASE_URL": f"sqlite:///{tmp_path / 'precos.db'}"}
+    # NVIDIA_API_KEY vazio: o `rastrear` usa a heurística (offline, determinístico).
+    # Nunca bater no LLM real no teste — a extração por LLM tem mock próprio.
+    return {
+        "DATABASE_URL": f"sqlite:///{tmp_path / 'precos.db'}",
+        "NVIDIA_API_KEY": "",
+    }
 
 
 @respx.mock

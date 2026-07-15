@@ -20,6 +20,12 @@ class OfertaBruta:
     preco: Decimal
     url: str
 
+    # O preço foi CONFIRMADO na página da loja (True) ou é o de vitrine do
+    # agregador/Google Shopping, não verificado ao vivo (False)? Coletores que
+    # leem a loja direto (KaBuM) trazem True; o agregador marca False quando não
+    # conseguiu confirmar na página — a UI avisa "preço de vitrine".
+    preco_confirmado: bool = True
+
     # EAN/GTIN, quando a loja informa: é o portão FORTE do matching (§14) —
     # se bater com o do produto, é match certo. Nem toda oferta traz.
     ean: str | None = None
