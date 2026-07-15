@@ -108,24 +108,71 @@ def test_verifica_link_preco_e_nome_na_pagina_do_produto():
     )
     respx.get(direto).mock(return_value=httpx.Response(200, html=_HTML_COM_PRECO))
     ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
-    # Só o Zoom casou (domínio) e teve preço confirmado.
+    # Só o Zoom casou (domínio) e teve preço confirmado na página.
     assert [o.vendedor for o in ofertas] == ["Zoom"]
     assert ofertas[0].url == direto
     assert ofertas[0].preco == Decimal("449.90")  # preço da PÁGINA, não do Google
-    assert ofertas[0].titulo == "Echo Dot 5 Geração"  # nome da PÁGINA, não do Google
+    assert ofertas[0].titulo == "Echo Dot 5 Geração"  # nome da PÁGINA
 
 
 @respx.mock
 def test_pagina_sem_preco_descarta_loja():
-    # Achou a página do produto, mas ela não expõe o preço → descarta.
+    # httpx achou a página mas sem preço, e sem scrape → descarta (preço tem que
+    # ser confirmado; nada de vitrine aproximada).
     respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
     direto = "https://www.zoom.com.br/produto/echo-dot-5-alexa"
     respx.post(_URL_ORGANICA).mock(
         return_value=httpx.Response(200, json={"organic": [{"link": direto}]})
     )
     respx.get(direto).mock(return_value=httpx.Response(200, html="<html>sem preço</html>"))
-    ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
+    coletor = ColetorGoogleShopping("chave-fake", usar_scrape=False)
+    ofertas = asyncio.run(coletor.buscar("echo dot 5"))
     assert ofertas == []
+
+
+_SCRAPE_JSONLD = {
+    "jsonld": {
+        "@type": "Product",
+        "name": "Purificador Electrolux PE12G",
+        "offers": {"@type": "Offer", "price": "632.31"},
+    }
+}
+
+
+@respx.mock
+def test_loja_bloqueada_confirma_preco_via_scrape():
+    # httpx dá 403 (anti-bot), mas o Serper scrape renderiza e devolve o preço
+    # REAL no jsonld → a loja entra com preço CONFIRMADO (não vitrine).
+    respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
+    direto = "https://www.zoom.com.br/produto/echo-dot-5-alexa"  # casa a loja "Zoom"
+    respx.post(_URL_ORGANICA).mock(
+        return_value=httpx.Response(200, json={"organic": [{"link": direto}]})
+    )
+    respx.get(direto).mock(return_value=httpx.Response(403, html="bloqueado"))
+    respx.post("https://scrape.serper.dev").mock(
+        return_value=httpx.Response(200, json=_SCRAPE_JSONLD)
+    )
+    ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
+    zoom = next(o for o in ofertas if o.vendedor == "Zoom")
+    assert zoom.preco == Decimal("632.31")  # preço do scrape, confirmado
+    assert zoom.titulo == "Purificador Electrolux PE12G"
+    assert zoom.url == direto
+
+
+@respx.mock
+def test_scrape_sem_preco_descarta():
+    # Scrape também não achou preço (ex.: página de login) → descarta a loja.
+    respx.post(_URL).mock(return_value=httpx.Response(200, json=_FIXTURE))
+    direto = "https://www.zoom.com.br/produto/echo-dot-5-alexa"
+    respx.post(_URL_ORGANICA).mock(
+        return_value=httpx.Response(200, json={"organic": [{"link": direto}]})
+    )
+    respx.get(direto).mock(return_value=httpx.Response(403))
+    respx.post("https://scrape.serper.dev").mock(
+        return_value=httpx.Response(200, json={"text": "Faça login", "metadata": {}})
+    )
+    ofertas = asyncio.run(ColetorGoogleShopping("chave-fake").buscar("echo dot 5"))
+    assert [o for o in ofertas if o.vendedor == "Zoom"] == []
 
 
 @respx.mock
@@ -191,6 +238,9 @@ def test_e_link_de_produto():
     assert _e_link_de_produto("https://www.kabum.com.br/produto/460471/echo")
     assert _e_link_de_produto("https://loja.com.br/echo-dot-5-preto-123/p")
     assert _e_link_de_produto("https://www.amazon.com.br/Echo/dp/B09B8VGCR8")
+    # Mercado Livre (/p/MLB...) e Magazine Luiza (/p/241.../) → são produto:
+    assert _e_link_de_produto("https://www.mercadolivre.com.br/echo-dot/p/MLB123")
+    assert _e_link_de_produto("https://www.magazineluiza.com.br/echo/p/241203500/te/")
     # Listas/buscas → não são produto:
     assert not _e_link_de_produto("https://lista.mercadolivre.com.br/echo-dot-5")
     assert not _e_link_de_produto("https://br.ebay.com/b/Amazon-Echo-Dot/184435")

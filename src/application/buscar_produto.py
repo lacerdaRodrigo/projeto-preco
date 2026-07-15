@@ -237,6 +237,14 @@ def _preco_final_de(oferta: OfertaBruta) -> Decimal:
 
 
 def _descricao_de(produto: Produto) -> str:
-    """Monta o texto de busca a partir dos campos que identificam o produto."""
+    """Monta o texto de busca (§4).
+
+    Com âncora (marca + modelo), consulta ENXUTA por ela ("Motorola Moto G67") —
+    a string verbosa inteira over-constringe: nenhuma loja titula igual, então
+    buscar o título todo devolve pouco ou nada. Sem âncora (ex.: móvel sem
+    part-number), cai no nome completo, que é o que identifica o produto.
+    """
+    if produto.marca and produto.modelo:
+        return f"{produto.marca} {produto.modelo}"
     partes = [produto.nome, produto.marca or "", produto.modelo or ""]
     return " ".join(p for p in partes if p).strip()

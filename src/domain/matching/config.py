@@ -36,6 +36,17 @@ class ConfigMatching:
         }
     )
 
+    # Palavras que denunciam ACESSÓRIO/PEÇA (não o produto em si). Vetadas só
+    # quando aparecem na oferta e NÃO no nome do meu produto — se eu rastreio um
+    # refil, meu nome tem "refil" e não veta. Pega o clássico "Refil para
+    # Purificador PE12G" / "Mouse para Notebook A15" (§14).
+    vetos_acessorio: tuple[str, ...] = (
+        "refil", "refis", "kit", "compativel", "capa", "case", "pelicula",
+        "suporte", "cabo", "carregador", "adaptador", "mouse", "teclado",
+        "cooler", "bomba", "pingadeira", "gabinete", "protetor", "adesivo",
+        "brinde", "skin", "membrana", "valvula",
+    )
+
     # Palavras/frases-ruído removidas antes de comparar (não ajudam a identificar
     # o produto). Só afetam a similaridade — vetos ("seminovo") são outra etapa.
     ruido: tuple[str, ...] = (

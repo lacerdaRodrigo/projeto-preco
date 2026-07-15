@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import unicodedata
 from dataclasses import replace
 from html import unescape
 from decimal import Decimal, DecimalException
@@ -37,6 +38,7 @@ from domain.oferta import OfertaBruta
 
 _URL_BUSCA = "https://google.serper.dev/shopping"
 _URL_ORGANICA = "https://google.serper.dev/search"  # resolve o link direto da loja
+_URL_SCRAPE = "https://scrape.serper.dev"  # renderiza a página (fura anti-bot; 2 créditos)
 # 40 resultados = leque largo de lojas numa busca (custa 2 créditos dos 2.500).
 _NUM_RESULTADOS = 40
 # UA de navegador pra ler a página do produto (algumas lojas bloqueiam o agente
@@ -61,6 +63,7 @@ class ColetorGoogleShopping:
         api_key: str,
         timeout_s: float = 20.0,
         resolver_links_diretos: bool = True,
+        usar_scrape: bool = True,
     ) -> None:
         if not api_key:
             raise ValueError("ColetorGoogleShopping exige SERPER_API_KEY")
@@ -69,6 +72,9 @@ class ColetorGoogleShopping:
         # Resolver o link direto gasta ~1 crédito por loja. Ligado por padrão
         # (o link do shopping é morto); desligável em teste/uso econômico.
         self._resolver_links = resolver_links_diretos
+        # Fallback de preço via Serper scrape quando a loja bloqueia o httpx
+        # (ML, Magalu). Renderiza a página e devolve o JSON-LD; +2 créditos/loja.
+        self._usar_scrape = usar_scrape
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -119,7 +125,7 @@ class ColetorGoogleShopping:
 
         Para cada loja (dedup por `vendedor`): acha a página do produto e lê o
         preço ao vivo dela. Loja sem página de produto OU sem preço confirmado é
-        **descartada** — melhor menos lojas do que preço/link errado.
+        **descartada** — preço comparado é preço REAL, nunca vitrine aproximada.
         """
         fontes = list({o.vendedor for o in ofertas if o.vendedor})
         resolvidos = await asyncio.gather(
@@ -162,19 +168,50 @@ class ColetorGoogleShopping:
     ) -> tuple[Any | None, str | None]:
         """Lê preço e nome ao vivo da página do produto (schema.org). Falha → (None, None).
 
-        Leitura educada de página pública (UA de navegador, 1 requisição). Se a
-        loja não expõe o preço no HTML (ex.: VTEX que carrega via JS), devolve
-        preço None e a loja é descartada.
+        Duas tentativas: (1) httpx direto (grátis) — resolve as lojas abertas;
+        (2) se não veio preço (loja bloqueou com 403/desafio, ex.: ML/Magalu),
+        cai no Serper scrape, que renderiza a página e fura o anti-bot (+2
+        créditos). Assim o preço vem CONFIRMADO mesmo das lojas grandes.
         """
         try:
             resposta = await cliente.get(
                 url, headers={"User-Agent": _USER_AGENT}, follow_redirects=True
             )
+            if resposta.status_code == 200:
+                preco, nome = _extrair_da_pagina(resposta.text)
+                if preco is not None:
+                    return preco, nome
+        except httpx.HTTPError:
+            pass  # bloqueio/rede → tenta o scrape abaixo
+
+        if self._usar_scrape:
+            return await self._ler_via_scrape(cliente, url)
+        return None, None
+
+    async def _ler_via_scrape(
+        self, cliente: httpx.AsyncClient, url: str
+    ) -> tuple[Any | None, str | None]:
+        """Preço e nome via Serper scrape (renderiza a página; fura anti-bot).
+
+        Devolve o `jsonld` já parseado (dict) — reusamos o mesmo parser do
+        schema.org. Sem preço estruturado → (None, None) e a loja é descartada
+        (preço tem que ser confirmado, nunca vitrine)."""
+        try:
+            resposta = await cliente.post(
+                _URL_SCRAPE, headers=self._headers, json={"url": url}
+            )
         except httpx.HTTPError:
             return None, None
         if resposta.status_code != 200:
             return None, None
-        return _extrair_da_pagina(resposta.text)
+        try:
+            corpo = resposta.json()
+        except ValueError:
+            return None, None
+        jsonld = corpo.get("jsonld") if isinstance(corpo, dict) else None
+        if jsonld is None:
+            return None, None
+        return _preco_e_nome_de_objeto(jsonld)
 
     async def _link_direto(
         self, cliente: httpx.AsyncClient, descricao: str, fonte: str
@@ -255,13 +292,15 @@ def _e_link_de_produto(url: str) -> bool:
     """É a página de UM produto (não uma lista/busca com vários)?
 
     Conservador de propósito: na dúvida, descarta. Antes trazer menos lojas, mas
-    cada link abrindo o produto certo — que é o que o usuário pediu.
+    cada link abrindo o produto certo — que é o que o usuário pediu (relaxar isso
+    p/ slug puro foi testado ao vivo e trouxe páginas erradas → descartes).
     """
     partes = urlparse(url)
     if "google.com" in partes.netloc:  # link de busca não é produto
         return False
     caminho = partes.path.lower()
-    if any(marca in caminho for marca in _MARCAS_PRODUTO):
+    # "/p/" cobre Mercado Livre (/p/MLB...), Magazine Luiza (/p/241.../) e afins.
+    if any(marca in caminho for marca in _MARCAS_PRODUTO) or "/p/" in caminho:
         return True
     # Padrão VTEX (Americanas, WebContinental, etc.): a URL do produto termina em /p.
     return caminho.endswith("/p") or caminho.endswith("/p/")
@@ -310,6 +349,12 @@ def _preco_e_nome_json_ld(bloco: str) -> tuple[Decimal | None, str | None]:
         dados = json.loads(bloco)
     except (ValueError, TypeError):
         return None, None
+    return _preco_e_nome_de_objeto(dados)
+
+
+def _preco_e_nome_de_objeto(dados: Any) -> tuple[Decimal | None, str | None]:
+    """Preço e nome de um JSON-LD JÁ parseado (dict/lista). Reusado pelo scrape
+    do Serper, que devolve o `jsonld` como objeto pronto (não texto)."""
     # JSON-LD pode ser objeto, lista ou {"@graph": [...]}. Achata tudo.
     fila: list[Any] = dados if isinstance(dados, list) else [dados]
     for obj in list(fila):
@@ -346,19 +391,57 @@ def _para_dinheiro(valor: Any) -> Decimal | None:
     return preco if preco > ZERO else None
 
 
+# Apelidos de loja: o `source` do shopping nem sempre é o domínio. Mapeia o nome
+# comercial → um pedaço que aparece no domínio. É config (estender = 1 linha).
+_APELIDOS_LOJA: dict[str, str] = {
+    "magalu": "magazineluiza",
+    "mercadolivre": "mercadolivre",
+    "mercado livre": "mercadolivre",
+    "casas bahia": "casasbahia",
+    "ponto": "pontofrio",
+    "ponto frio": "pontofrio",
+    "americanas": "americanas",
+    "girafa": "girafa",
+    "kabum": "kabum",
+}
+# Palavras genéricas de nome de loja que não identificam o domínio (não casar por elas).
+_STOPWORDS_LOJA = frozenset({
+    "loja", "lojas", "com", "online", "oficial", "store", "shop", "shopping",
+    "supermercado", "brasil", "br", "the", "retail", "www", "site",
+})
+
+
+def _ascii(texto: str) -> str:
+    """minúsculo e sem acento, convertido pra base (ô→o), não apagado."""
+    decomposto = unicodedata.normalize("NFKD", texto.lower())
+    return "".join(c for c in decomposto if not unicodedata.combining(c))
+
+
 def _dominio_combina(link: str, fonte: str) -> bool:
     """O domínio do link plausivelmente é a loja `fonte`?
 
-    Compara o `source` (só letras/números, minúsculo) com o domínio: aceita se a
-    raiz do domínio aparece no source, ou o source aparece no domínio (≥ 4 chars).
-    Ex.: "Zoom"↔zoom.com.br ✓, "infoCELL"↔homedepot.com ✗.
+    Robusto a duas coisas que derrubavam lojas boas: (1) acento no nome
+    ("TudoBônus"→tudobonus), convertido pra base em vez de apagado; (2) apelido
+    comercial ("Magalu"→magazineluiza), via mapa. Casa se um token significativo
+    do nome (≥4 chars, fora as palavras genéricas) aparece no domínio.
     """
-    alvo = re.sub(r"[^a-z0-9]", "", fonte.lower())
-    if len(alvo) < 4:
-        return False
-    dominio = urlparse(link).netloc.lower().removeprefix("www.")
-    raiz = dominio.split(".")[0]
-    return (len(raiz) >= 4 and raiz in alvo) or (alvo in dominio)
+    fonte_ascii = _ascii(fonte)
+    dominio = _ascii(urlparse(link).netloc).removeprefix("www.")
+    dominio_alnum = re.sub(r"[^a-z0-9]", "", dominio)
+
+    # Apelido bate direto? ("magalu" → "magazineluiza" no domínio)
+    apelido = _APELIDOS_LOJA.get(fonte_ascii.strip())
+    if apelido and apelido in dominio_alnum:
+        return True
+
+    # Senão, algum token significativo do nome aparece no domínio?
+    tokens = [t for t in re.split(r"[^a-z0-9]+", fonte_ascii) if len(t) >= 4]
+    for token in tokens:
+        if token in _STOPWORDS_LOJA:
+            continue
+        if token in dominio_alnum:
+            return True
+    return False
 
 
 def _parsear_item(item: Any, descricao: str = "") -> OfertaBruta | None:

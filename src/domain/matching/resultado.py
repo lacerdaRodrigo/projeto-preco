@@ -24,6 +24,7 @@ class Etapa(str, Enum):
 
     EAN = "ean"  # portão forte
     VETO = "veto"  # palavra proibida / obrigatória
+    MODELO = "modelo"  # part-number/modelo forte bate (§5)
     ATRIBUTO = "atributo"  # atributo-chave divergente
     SIMILARIDADE = "similaridade"  # pontuador textual
 
