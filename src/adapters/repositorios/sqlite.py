@@ -20,6 +20,7 @@ import sqlite3
 from datetime import datetime
 from decimal import Decimal
 
+from application.buscadores import Confianca, CupomDescoberto, StatusCupom
 from application.repositorios import AcessoForaDaConta
 from domain.dinheiro import dinheiro
 from domain.produto import Produto
@@ -79,6 +80,12 @@ CREATE TABLE IF NOT EXISTS cupom (
     valor_min TEXT NOT NULL DEFAULT '0',
     validade TEXT,
     primeira_compra INTEGER NOT NULL DEFAULT 0,
+    -- Descoberta automática: 'manual' (você digitou) vs 'descoberto' (buscador).
+    origem TEXT NOT NULL DEFAULT 'manual',
+    status TEXT,          -- provavel_valido | nao_confirmado | expirado (descoberto)
+    confianca TEXT,       -- alta | media | baixa
+    evidencias TEXT,      -- JSON: ["visto em 3 sites", ...]
+    descoberto_em TEXT,   -- ISO; usado pra TTL do cache
     UNIQUE (loja_origem, codigo)
 );
 
@@ -108,12 +115,35 @@ _CAMPOS_OFERTA = (
 )
 
 
+# Colunas acrescentadas à tabela `cupom` depois que ela já existia (descoberta de
+# cupons). `CREATE TABLE IF NOT EXISTS` não altera tabela existente, então a gente
+# adiciona por ALTER, idempotente (pula a que já existe). SQLite sem PII aqui.
+_COLUNAS_CUPOM_NOVAS = (
+    ("origem", "TEXT NOT NULL DEFAULT 'manual'"),
+    ("status", "TEXT"),
+    ("confianca", "TEXT"),
+    ("evidencias", "TEXT"),
+    ("descoberto_em", "TEXT"),
+)
+
+
+def _migrar(conexao: sqlite3.Connection) -> None:
+    """Migrações leves pra bancos criados antes de colunas novas."""
+    existentes = {
+        linha["name"] for linha in conexao.execute("PRAGMA table_info(cupom)")
+    }
+    for nome, definicao in _COLUNAS_CUPOM_NOVAS:
+        if nome not in existentes:
+            conexao.execute(f"ALTER TABLE cupom ADD COLUMN {nome} {definicao}")
+
+
 def conectar(caminho: str = ":memory:") -> sqlite3.Connection:
     """Abre a conexão, liga as FKs e cria o esquema (idempotente)."""
     conexao = sqlite3.connect(caminho)
     conexao.row_factory = sqlite3.Row
     conexao.execute("PRAGMA foreign_keys = ON")
     conexao.executescript(_ESQUEMA)
+    _migrar(conexao)
     conexao.commit()
     return conexao
 
@@ -385,27 +415,70 @@ class RepositorioCupomSQLite:
         self._con = conexao
 
     def ativos_por_loja(self, loja_nome: str) -> list[Cupom]:
+        # Aplicáveis no preço: manuais (você confia) + descobertos PROVÁVEL-VÁLIDOS.
+        # Descoberto expirado/não-confirmado não desconta (só aparece na carteira).
         linhas = self._con.execute(
-            "SELECT * FROM cupom WHERE loja_origem = ?",
-            (loja_nome,),
+            "SELECT * FROM cupom WHERE loja_origem = ? "
+            "AND (origem = 'manual' OR status = ?)",
+            (loja_nome, StatusCupom.PROVAVEL_VALIDO.value),
         ).fetchall()
         return [_linha_para_cupom(linha) for linha in linhas]
+
+    def descobertos_por_loja(self, loja_nome: str) -> list[CupomDescoberto]:
+        """Todos os cupons DESCOBERTOS da loja (qualquer status) — pra carteira/UI."""
+        linhas = self._con.execute(
+            "SELECT * FROM cupom WHERE loja_origem = ? AND origem = 'descoberto' "
+            "ORDER BY status, codigo",
+            (loja_nome,),
+        ).fetchall()
+        return [_linha_para_descoberto(linha) for linha in linhas]
+
+    def visto_em(self, loja_nome: str) -> datetime | None:
+        """Quando a loja foi descoberta pela última vez (pro TTL do cache)."""
+        linha = self._con.execute(
+            "SELECT MAX(descoberto_em) AS m FROM cupom "
+            "WHERE loja_origem = ? AND origem = 'descoberto'",
+            (loja_nome,),
+        ).fetchone()
+        return datetime.fromisoformat(linha["m"]) if linha and linha["m"] else None
 
     def todos(self) -> list[tuple[str, Cupom]]:
         linhas = self._con.execute("SELECT * FROM cupom ORDER BY loja_origem").fetchall()
         return [(linha["loja_origem"], _linha_para_cupom(linha)) for linha in linhas]
 
+    def listar_carteira(
+        self,
+    ) -> tuple[list[tuple[str, Cupom]], list[tuple[str, CupomDescoberto]]]:
+        """Tudo pra tela Carteira: (manuais, descobertos) já separados por origem."""
+        linhas = self._con.execute(
+            "SELECT * FROM cupom ORDER BY loja_origem, codigo"
+        ).fetchall()
+        manuais: list[tuple[str, Cupom]] = []
+        descobertos: list[tuple[str, CupomDescoberto]] = []
+        for linha in linhas:
+            loja = linha["loja_origem"]
+            if linha["origem"] == "descoberto":
+                descobertos.append((loja, _linha_para_descoberto(linha)))
+            else:
+                manuais.append((loja, _linha_para_cupom(linha)))
+        return manuais, descobertos
+
     def salvar(self, loja_nome: str, cupom: Cupom) -> None:
+        # Manual: você digitou → confiável. Marca origem='manual' e limpa os campos
+        # de descoberta (se antes era descoberto, vira manual ao re-salvar).
         self._con.execute(
             """INSERT INTO cupom
-                 (loja_origem, codigo, desconto, tipo, valor_min, validade, primeira_compra)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                 (loja_origem, codigo, desconto, tipo, valor_min, validade,
+                  primeira_compra, origem, status, confianca, evidencias, descoberto_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', NULL, NULL, NULL, NULL)
                ON CONFLICT (loja_origem, codigo) DO UPDATE SET
                  desconto = excluded.desconto,
                  tipo = excluded.tipo,
                  valor_min = excluded.valor_min,
                  validade = excluded.validade,
-                 primeira_compra = excluded.primeira_compra""",
+                 primeira_compra = excluded.primeira_compra,
+                 origem = 'manual',
+                 status = NULL, confianca = NULL, evidencias = NULL, descoberto_em = NULL""",
             (
                 loja_nome,
                 cupom.codigo,
@@ -417,6 +490,60 @@ class RepositorioCupomSQLite:
             ),
         )
         self._con.commit()
+
+    def salvar_descoberto(
+        self, loja_nome: str, descoberto: CupomDescoberto, quando: datetime
+    ) -> None:
+        """Upsert de um cupom DESCOBERTO. Nunca sobrescreve um manual (guarda no
+        WHERE): o que você digitou tem prioridade sobre o que o buscador achou."""
+        c = descoberto.cupom
+        self._con.execute(
+            """INSERT INTO cupom
+                 (loja_origem, codigo, desconto, tipo, valor_min, validade,
+                  primeira_compra, origem, status, confianca, evidencias, descoberto_em)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 'descoberto', ?, ?, ?, ?)
+               ON CONFLICT (loja_origem, codigo) DO UPDATE SET
+                 desconto = excluded.desconto,
+                 tipo = excluded.tipo,
+                 validade = excluded.validade,
+                 status = excluded.status,
+                 confianca = excluded.confianca,
+                 evidencias = excluded.evidencias,
+                 descoberto_em = excluded.descoberto_em
+               WHERE cupom.origem = 'descoberto'""",
+            (
+                loja_nome,
+                c.codigo,
+                _txt(c.desconto),
+                c.tipo.value,
+                _txt(c.valor_min),
+                c.validade.isoformat() if c.validade else None,
+                descoberto.status.value,
+                descoberto.confianca.value,
+                json.dumps(descoberto.evidencias),
+                quando.isoformat(),
+            ),
+        )
+        self._con.commit()
+
+    def remover(self, loja_nome: str, codigo: str) -> bool:
+        cur = self._con.execute(
+            "DELETE FROM cupom WHERE loja_origem = ? AND codigo = ?",
+            (loja_nome, codigo),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
+
+def _linha_para_descoberto(linha: sqlite3.Row) -> CupomDescoberto:
+    ev = linha["evidencias"]
+    return CupomDescoberto(
+        cupom=_linha_para_cupom(linha),
+        status=StatusCupom(linha["status"]) if linha["status"] else StatusCupom.NAO_CONFIRMADO,
+        confianca=Confianca(linha["confianca"]) if linha["confianca"] else Confianca.BAIXA,
+        evidencias=json.loads(ev) if ev else [],
+    )
+
 
 def _linha_para_cupom(linha: sqlite3.Row) -> Cupom:
     from domain.cupom import TipoDesconto
@@ -463,6 +590,15 @@ class RepositorioCashbackSQLite:
             ),
         )
         self._con.commit()
+
+    def remover(self, loja_nome: str, fonte: str) -> bool:
+        cur = self._con.execute(
+            "DELETE FROM cashback WHERE loja_origem = ? AND fonte = ?",
+            (loja_nome, fonte),
+        )
+        self._con.commit()
+        return cur.rowcount > 0
+
 
 def _linha_para_cashback(linha: sqlite3.Row) -> Cashback:
     return Cashback(

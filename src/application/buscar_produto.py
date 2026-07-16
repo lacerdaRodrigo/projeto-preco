@@ -12,9 +12,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from application.buscadores import BuscadorDeCupons
 from application.classificadores import ClassificadorIdentidade, VereditoIdentidade
 from application.coletores import Coletor, ErroColetor, LojaIndisponivel
 from application.repositorios import (
@@ -54,6 +55,11 @@ class OfertaRankeada:
     preco_base: Decimal | None = None
     desconto_cupom: Decimal | None = None
     desconto_cashback: Decimal | None = None
+    # Qual cupom/cashback incidiu (RN13). `cupom_confirmado=False` = cupom
+    # DESCOBERTO (não digitado por você) → o desconto é "provável", não garantido.
+    cupom_codigo: str | None = None
+    cupom_confirmado: bool = True
+    cashback_fonte: str | None = None
     # False = preço de vitrine (Google Shopping), não confirmado na página da loja.
     preco_confirmado: bool = True
 
@@ -114,6 +120,8 @@ class BuscarProduto:
         repo_cashback: RepositorioCashback | None = None,
         config_matching: ConfigMatching | None = None,
         classificador: ClassificadorIdentidade | None = None,
+        buscador_cupons: BuscadorDeCupons | None = None,
+        ttl_cupons: timedelta = timedelta(hours=24),
         agora: Callable[[], datetime] = datetime.now,
     ) -> None:
         self._coletores = coletores
@@ -127,6 +135,9 @@ class BuscarProduto:
         self._config = config_matching
         # O juiz de identidade (IA). Ausente → matching 100% determinístico.
         self._classificador = classificador
+        # Descoberta automática de cupons (Serper+LLM). Ausente → só carteira manual.
+        self._buscador_cupons = buscador_cupons
+        self._ttl_cupons = ttl_cupons  # cache: não redescobre a loja dentro do TTL
         self._agora = agora  # injetável para testes deterministas
 
     async def executar(
@@ -188,13 +199,20 @@ class BuscarProduto:
         data_hoje = self._agora().date()
         ranking = []
         for (loja_id, loja_origem), candidatas in aceitas.items():
+            await self._garantir_cupons(loja_origem)  # descobre se o cache expirou
             cupons = self._cupons.ativos_por_loja(loja_origem) if self._cupons else []
             cashbacks = (
                 self._cashbacks.ativos_por_loja(loja_origem) if self._cashbacks else []
             )
+            # Códigos descobertos: o que NÃO estiver aqui é manual (confiável).
+            descobertos = (
+                {d.cupom.codigo for d in self._cupons.descobertos_por_loja(loja_origem)}
+                if self._cupons else set()
+            )
             melhor_cand = _melhor(candidatas, cupons, cashbacks, data_hoje, condicoes_usuario)
             ranking.append(self._persistir(
-                produto_id, melhor_cand, conta_id, cupons, cashbacks, data_hoje, condicoes_usuario
+                produto_id, melhor_cand, conta_id, cupons, cashbacks,
+                data_hoje, condicoes_usuario, descobertos,
             ))
 
         # Ranking: em estoque primeiro, depois pelo menor preço final (§16).
@@ -258,15 +276,30 @@ class BuscarProduto:
             # Inclui ColetorQuebrado (RN12): não grava nada dessa loja.
             return _Coleta(coletor, [], "degradado")
 
+    async def _garantir_cupons(self, loja: str) -> None:
+        """Descobre e grava os cupons da loja, com CACHE por TTL — não redescobre
+        se a última descoberta é recente (economiza Serper/LLM entre buscas). Sem
+        buscador/repositório, não faz nada (só a carteira manual vale)."""
+        if self._buscador_cupons is None or self._cupons is None:
+            return
+        ultimo = self._cupons.visto_em(loja)
+        if ultimo is not None and self._agora() - ultimo < self._ttl_cupons:
+            return  # cache fresco
+        descobertos = await self._buscador_cupons.buscar(loja)
+        quando = self._agora()
+        for d in descobertos:
+            self._cupons.salvar_descoberto(loja, d, quando)
+
     def _persistir(
-        self, 
-        produto_id: int, 
-        candidata: _Candidata, 
+        self,
+        produto_id: int,
+        candidata: _Candidata,
         conta_id: int,
         cupons: list[Cupom],
         cashbacks: list[Cashback],
         data_atual: date,
-        condicoes_usuario: tuple[str, ...]
+        condicoes_usuario: tuple[str, ...],
+        descobertos: set[str],
     ) -> OfertaRankeada:
         coletor, oferta = candidata.coletor, candidata.oferta
         sku = self._skus.salvar_ou_atualizar(
@@ -300,9 +333,10 @@ class BuscarProduto:
             ),
             conta_id,
         )
-        final, base, desc_cupom, desc_cashback = _decompor(
+        final, base, desc_cupom, desc_cashback, cupom_ap, cashback_ap = _decompor(
             oferta, cupons, cashbacks, data_atual, condicoes_usuario
         )
+        cupom_codigo = cupom_ap.codigo if cupom_ap else None
         return OfertaRankeada(
             loja=candidata.loja_origem,
             titulo=oferta.titulo,
@@ -313,6 +347,10 @@ class BuscarProduto:
             preco_base=base,
             desconto_cupom=desc_cupom if desc_cupom > 0 else None,
             desconto_cashback=desc_cashback if desc_cashback > 0 else None,
+            cupom_codigo=cupom_codigo,
+            # Confirmado = manual (você digitou); descoberto → "provável", marcado.
+            cupom_confirmado=cupom_codigo is not None and cupom_codigo not in descobertos,
+            cashback_fonte=cashback_ap.fonte if cashback_ap else None,
             preco_confirmado=oferta.preco_confirmado,
         )
 
@@ -386,19 +424,21 @@ def _decompor(
     cashbacks: list[Cashback],
     data_atual: date,
     condicoes_usuario: tuple[str, ...],
-) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-    """Decompõe o preço final (§16): devolve (final, base, desc_cupom, desc_cashback).
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Cupom | None, Cashback | None]:
+    """Decompõe o preço final (§16): (final, base, desc_cupom, desc_cashback,
+    cupom_aplicado, cashback_aplicado).
 
     base = preço à vista (ou o preço cheio). Aplica o MELHOR cupom válido, depois o
-    MELHOR cashback elegível sobre o valor já com cupom. A escadinha vira UI."""
+    MELHOR cashback elegível sobre o valor já com cupom. Devolve também QUAL cupom/
+    cashback incidiu (RN13, pra escadinha nomear na UI)."""
     base = oferta.preco_avista if oferta.preco_avista is not None else oferta.preco
-    _, desconto_cupom = avaliar_melhor_cupom(cupons, base, data_atual)
+    cupom, desconto_cupom = avaliar_melhor_cupom(cupons, base, data_atual)
 
     pos_cupom = base - desconto_cupom
     if pos_cupom < Decimal("0"):
         pos_cupom = Decimal("0")
 
-    _, valor_cashback = avaliar_melhor_cashback(
+    cashback, valor_cashback = avaliar_melhor_cashback(
         cashbacks, pos_cupom, list(condicoes_usuario)
     )
 
@@ -410,7 +450,7 @@ def _decompor(
         desconto_cupom=desconto_cupom,
         cashback=valor_cashback,
     )
-    return final, base, desconto_cupom, valor_cashback
+    return final, base, desconto_cupom, valor_cashback, cupom, cashback
 
 
 def _preco_final_de(

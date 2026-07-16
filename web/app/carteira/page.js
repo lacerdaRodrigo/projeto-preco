@@ -3,161 +3,207 @@
 import { useEffect, useState } from "react";
 import { api, reais } from "../lib/api";
 
+// Carteira: cupons vêm DIRETO do buscador (descobertos na busca de cada produto)
+// e já entram no preço marcados "não confirmado". Aqui você vê os descobertos por
+// loja e remove os que não prestam. Cashback é manual (elegibilidade sua).
 export default function Carteira() {
-  const [carteira, setCarteira] = useState(null);
+  const [dados, setDados] = useState(null);
   const [erro, setErro] = useState(null);
 
-  // Form states
-  const [cupomL, setCupomL] = useState("");
-  const [cupomC, setCupomC] = useState("");
-  const [cupomD, setCupomD] = useState("");
-  const [cupomT, setCupomT] = useState("percentual");
-  
-  const [cashL, setCashL] = useState("");
-  const [cashF, setCashF] = useState("");
-  const [cashP, setCashP] = useState("");
-  const [cashC, setCashC] = useState("");
-
   function carregar() {
-    api.listarCarteira().then(setCarteira).catch((e) => setErro(e.message));
+    api.listarCarteira().then(setDados).catch((e) => setErro(e.message));
   }
   useEffect(carregar, []);
 
-  async function addCupom(e) {
-    e.preventDefault();
-    try {
-      await api.cadastrarCupom({
-        loja: cupomL,
-        codigo: cupomC,
-        desconto: cupomD,
-        tipo: cupomT,
-        valor_min: "0",
-        validade: null,
-        primeira_compra: false
-      });
-      setCupomL(""); setCupomC(""); setCupomD("");
-      carregar();
-    } catch (err) {
-      setErro(err.message);
-    }
+  async function removerCupom(loja, codigo) {
+    try { await api.removerCupom(loja, codigo); carregar(); }
+    catch (e) { setErro(e.message); }
   }
-
-  async function addCashback(e) {
-    e.preventDefault();
-    try {
-      await api.cadastrarCashback({
-        loja: cashL,
-        fonte: cashF,
-        percentual: cashP,
-        teto: null,
-        condicao: cashC || null
-      });
-      setCashL(""); setCashF(""); setCashP(""); setCashC("");
-      carregar();
-    } catch (err) {
-      setErro(err.message);
-    }
+  async function removerCashback(loja, fonte) {
+    try { await api.removerCashback(loja, fonte); carregar(); }
+    catch (e) { setErro(e.message); }
   }
-
-  if (erro) return <main className="container"><div className="card" style={{ color: "var(--vermelho)" }}>{erro}</div></main>;
-  if (!carteira) return <main className="container"><p className="vazio">Carregando…</p></main>;
 
   return (
     <main className="container">
-      <div className="cabecalho">
-        <h1>Carteira Inteligente</h1>
-      </div>
+      <div className="cabecalho"><h1>Carteira</h1></div>
       <p className="subtitulo">
-        Gerencie seus cupons e contas de cashback. Eles são aplicados automaticamente na busca!
+        Cupons são <strong>descobertos automaticamente</strong> na busca e entram no
+        preço marcados “não confirmado” (teste na loja). Cashback é você que informa.
       </p>
 
-      <div className="grid">
-        <div className="card">
-          <h2 style={{marginTop: 0, marginBottom: 20}}>Novo Cupom</h2>
-          <form className="form" onSubmit={addCupom}>
-            <div className="campo">
-              <label>Loja (ex: KaBuM!)</label>
-              <input value={cupomL} onChange={e => setCupomL(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Código do Cupom</label>
-              <input value={cupomC} onChange={e => setCupomC(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Desconto Numérico</label>
-              <input type="number" step="0.01" value={cupomD} onChange={e => setCupomD(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Tipo de Desconto</label>
-              <select value={cupomT} onChange={e => setCupomT(e.target.value)}>
-                <option value="percentual">Percentual (%)</option>
-                <option value="fixo">Fixo (R$)</option>
-              </select>
-            </div>
-            <div className="form-acoes">
-              <button type="submit" className="btn">+ Salvar Cupom</button>
-            </div>
-          </form>
+      {erro && (
+        <div className="card" style={{ color: "var(--vermelho)" }}>
+          Não consegui falar com a API ({erro}). O backend está na porta 8000?
         </div>
+      )}
 
-        <div className="card">
-          <h2 style={{marginTop: 0, marginBottom: 20}}>Novo Cashback</h2>
-          <form className="form" onSubmit={addCashback}>
-            <div className="campo">
-              <label>Loja (ex: KaBuM!)</label>
-              <input value={cashL} onChange={e => setCashL(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Fonte (ex: inter, meliuz)</label>
-              <input value={cashF} onChange={e => setCashF(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Percentual (%)</label>
-              <input type="number" step="0.01" value={cashP} onChange={e => setCashP(e.target.value)} required />
-            </div>
-            <div className="campo">
-              <label>Condição (ex: inter)</label>
-              <input value={cashC} onChange={e => setCashC(e.target.value)} placeholder="Opcional. DEVE constar no seu .env" />
-            </div>
-            <div className="form-acoes">
-              <button type="submit" className="btn">+ Salvar Cashback</button>
-            </div>
-          </form>
+      {!dados && !erro && <p className="vazio">Carregando…</p>}
+
+      {dados && (
+        <div className="carteira-grid">
+          <section>
+            <h2 style={{ fontSize: 18, margin: "0 0 12px" }}>Cupons descobertos</h2>
+            <CuponsDescobertos itens={dados.descobertos} onRemover={removerCupom} />
+            {dados.cupons.length > 0 && (
+              <>
+                <h3 style={{ fontSize: 15, margin: "22px 0 10px" }}>Cupons manuais</h3>
+                <div className="card">
+                  {dados.cupons.map((c, i) => (
+                    <div className="item-carteira" key={i}>
+                      <div>
+                        <span className="loja">{c.loja}</span>{" "}
+                        <code className="codigo">{c.codigo}</code>
+                        <span className="chip confirmado" style={{ marginLeft: 6 }}>confirmado</span>
+                        <BotaoRemover onClick={() => removerCupom(c.loja, c.codigo)} />
+                      </div>
+                      <div className="titulo">
+                        {c.tipo === "percentual" ? `${Number(c.desconto)}% off` : `${reais(c.desconto)} off`}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </section>
+
+          <section>
+            <FormCashback aoSalvar={carregar} aoErro={setErro} />
+            <ListaCashbacks cashbacks={dados.cashbacks} onRemover={removerCashback} />
+          </section>
         </div>
-      </div>
-
-      <div className="card" style={{marginTop: 32}}>
-        <h2 style={{marginTop: 0}}>Meus Cupons Ativos</h2>
-        {carteira.cupons.length === 0 && <p className="vazio" style={{padding: 24}}>Nenhum cupom cadastrado.</p>}
-        {carteira.cupons.map((c, i) => (
-          <div className="oferta" key={i}>
-            <div className="linha1">
-              <span className="loja">{c.loja}</span>
-              <span className="chip confirmado">{c.codigo}</span>
-              <span className="preco">
-                {c.tipo === 'percentual' ? `${c.desconto}%` : reais(c.desconto)}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="card" style={{marginTop: 32}}>
-        <h2 style={{marginTop: 0}}>Meus Cashbacks Ativos</h2>
-        {carteira.cashbacks.length === 0 && <p className="vazio" style={{padding: 24}}>Nenhum cashback cadastrado.</p>}
-        {carteira.cashbacks.map((c, i) => (
-          <div className="oferta" key={i}>
-            <div className="linha1">
-              <span className="loja">{c.loja}</span>
-              <span className="chip vitrine">{c.fonte}</span>
-              {c.condicao && <span className="chip neutro">Restrito: {c.condicao}</span>}
-              <span className="preco" style={{color: "var(--verde)"}}>
-                {c.percentual}% de volta
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
+      )}
     </main>
+  );
+}
+
+const _STATUS = {
+  provavel_valido: { rotulo: "provável válido", classe: "confirmado" },
+  nao_confirmado: { rotulo: "não confirmado", classe: "neutro" },
+  expirado: { rotulo: "expirado", classe: "vitrine" },
+};
+
+function CuponsDescobertos({ itens, onRemover }) {
+  if (!itens || itens.length === 0) {
+    return (
+      <div className="mini-vazio">
+        Nenhum cupom descoberto ainda. Rode uma busca de produto — o sistema procura
+        cupons das lojas automaticamente.
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      {itens.map((c, i) => {
+        const s = _STATUS[c.status] || _STATUS.nao_confirmado;
+        return (
+          <div className="item-carteira" key={i}>
+            <div>
+              <span className="loja">{c.loja}</span>{" "}
+              <code className="codigo">{c.codigo}</code>
+              <span className={`chip ${s.classe}`} style={{ marginLeft: 6 }}>{s.rotulo}</span>
+              <BotaoRemover onClick={() => onRemover(c.loja, c.codigo)} />
+            </div>
+            <div className="titulo">
+              {c.tipo === "percentual" ? `${Number(c.desconto)}% off` : `${reais(c.desconto)} off`}
+              {c.validade && ` · até ${c.validade}`}
+              {c.evidencias?.length > 0 && ` · ${c.evidencias.join(" · ")}`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function BotaoRemover({ onClick }) {
+  return (
+    <button className="btn-remover" onClick={onClick} title="Remover" aria-label="Remover">🗑</button>
+  );
+}
+
+function FormCashback({ aoSalvar, aoErro }) {
+  const vazio = { loja: "", fonte: "", percentual: "", teto: "", condicao: "" };
+  const [form, setForm] = useState(vazio);
+  const [salvando, setSalvando] = useState(false);
+  const set = (c, v) => setForm((f) => ({ ...f, [c]: v }));
+
+  async function salvar(e) {
+    e.preventDefault();
+    setSalvando(true);
+    aoErro(null);
+    try {
+      await api.cadastrarCashback({
+        loja: form.loja.trim(),
+        fonte: form.fonte.trim(),
+        percentual: form.percentual || "0",
+        teto: form.teto || null,
+        condicao: form.condicao.trim() || null,
+      });
+      setForm(vazio);
+      aoSalvar();
+    } catch (e) {
+      aoErro(e.message);
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  return (
+    <form className="card form" onSubmit={salvar} style={{ marginBottom: 18 }}>
+      <h2 style={{ margin: 0, fontSize: 18 }}>Novo cashback</h2>
+      <div className="dois">
+        <div className="campo">
+          <label>Loja</label>
+          <input required value={form.loja} onChange={(e) => set("loja", e.target.value)} placeholder="Ex.: KaBuM!" />
+        </div>
+        <div className="campo">
+          <label>Fonte</label>
+          <span className="dica">Quem paga.</span>
+          <input required value={form.fonte} onChange={(e) => set("fonte", e.target.value)} placeholder="inter" />
+        </div>
+      </div>
+      <div className="dois">
+        <div className="campo">
+          <label>Percentual (%)</label>
+          <input required value={form.percentual} onChange={(e) => set("percentual", e.target.value)} placeholder="5" />
+        </div>
+        <div className="campo">
+          <label>Teto (opcional)</label>
+          <input value={form.teto} onChange={(e) => set("teto", e.target.value)} placeholder="100" />
+        </div>
+      </div>
+      <div className="campo">
+        <label>Condição (opcional)</label>
+        <span className="dica">Só vale se estiver em CASHBACK_ELEGIVEL no .env (ex.: inter).</span>
+        <input value={form.condicao} onChange={(e) => set("condicao", e.target.value)} placeholder="inter" />
+      </div>
+      <div className="form-acoes">
+        <button className="btn" type="submit" disabled={salvando}>{salvando ? "Salvando…" : "Adicionar cashback"}</button>
+      </div>
+    </form>
+  );
+}
+
+function ListaCashbacks({ cashbacks, onRemover }) {
+  if (!cashbacks || cashbacks.length === 0) return <div className="mini-vazio">Nenhum cashback cadastrado.</div>;
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0, fontSize: 16 }}>Cashbacks ({cashbacks.length})</h2>
+      {cashbacks.map((c, i) => (
+        <div className="item-carteira" key={i}>
+          <div>
+            <span className="loja">{c.loja}</span>{" "}
+            <span className="chip confirmado">{Number(c.percentual)}%</span>
+            <span className="titulo" style={{ marginLeft: 6 }}>via {c.fonte}</span>
+            <BotaoRemover onClick={() => onRemover(c.loja, c.fonte)} />
+          </div>
+          <div className="titulo">
+            {c.teto ? `teto ${reais(c.teto)}` : "sem teto"}
+            {c.condicao && ` · condição: ${c.condicao}`}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }

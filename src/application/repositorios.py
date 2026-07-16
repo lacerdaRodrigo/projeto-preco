@@ -13,8 +13,10 @@ Puro: só Protocols e um erro. Sem driver de banco.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
+from application.buscadores import CupomDescoberto
 from domain.cashback import Cashback
 from domain.cupom import Cupom
 from domain.produto import Produto
@@ -74,18 +76,42 @@ class RepositorioSnapshot(Protocol):
 
 
 class RepositorioCupom(Protocol):
-    """Busca cupons disponíveis."""
+    """Cupons por loja: manuais (você digita) + descobertos (buscador)."""
 
     def ativos_por_loja(self, loja_nome: str) -> list[Cupom]:
-        """Cupons ativos para a loja especificada."""
+        """Aplicáveis no preço: manuais + descobertos prováveis-válidos."""
+        ...
+
+    def descobertos_por_loja(self, loja_nome: str) -> list[CupomDescoberto]:
+        """Todos os descobertos da loja (qualquer status), pra carteira/UI."""
+        ...
+
+    def visto_em(self, loja_nome: str) -> datetime | None:
+        """Última descoberta da loja (pro TTL do cache); None se nunca."""
         ...
 
     def todos(self) -> list[tuple[str, Cupom]]:
         """Todos os cupons cadastrados, agrupados por loja."""
         ...
 
+    def listar_carteira(
+        self,
+    ) -> tuple[list[tuple[str, Cupom]], list[tuple[str, CupomDescoberto]]]:
+        """Pra tela Carteira: (manuais, descobertos) separados por origem."""
+        ...
+
     def salvar(self, loja_nome: str, cupom: Cupom) -> None:
-        """Salva ou atualiza um cupom na loja."""
+        """Salva/atualiza um cupom MANUAL na loja."""
+        ...
+
+    def salvar_descoberto(
+        self, loja_nome: str, descoberto: CupomDescoberto, quando: datetime
+    ) -> None:
+        """Upsert de um cupom DESCOBERTO (não sobrescreve manual)."""
+        ...
+
+    def remover(self, loja_nome: str, codigo: str) -> bool:
+        """Remove o cupom (loja+código); devolve se removeu algo."""
         ...
 
 
@@ -102,4 +128,8 @@ class RepositorioCashback(Protocol):
 
     def salvar(self, loja_nome: str, cashback: Cashback) -> None:
         """Salva ou atualiza um cashback na loja."""
+        ...
+
+    def remover(self, loja_nome: str, fonte: str) -> bool:
+        """Remove o cashback (loja+fonte); devolve se removeu algo."""
         ...

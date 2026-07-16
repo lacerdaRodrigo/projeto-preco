@@ -18,10 +18,12 @@ from adapters.repositorios.sqlite import (
     RepositorioCashbackSQLite,
     conectar,
 )
+from application.buscadores import Confianca, CupomDescoberto, StatusCupom
 from application.buscar_produto import BuscarProduto, ProdutoInexistente
 from application.classificadores import VereditoIdentidade
 from application.coletores import ColetorQuebrado, LojaIndisponivel
 from domain import OfertaBruta, Produto
+from domain.cupom import Cupom, TipoDesconto
 
 CONTA = 1
 
@@ -270,6 +272,70 @@ def test_produto_inexistente_da_erro(con):
     uc, _, _ = _monta(con, [ColetorFake("ML", 1)])
     with pytest.raises(ProdutoInexistente):
         asyncio.run(uc.executar(999, CONTA))
+
+
+# ---------- Descoberta automática de cupons ----------
+
+class BuscadorCuponsFake:
+    """Buscador de mentira: cupons fixos por loja, conta as chamadas (pro cache)."""
+
+    def __init__(self, por_loja=None):
+        self._por_loja = por_loja or {}
+        self.chamadas = 0
+
+    async def buscar(self, loja):
+        self.chamadas += 1
+        return list(self._por_loja.get(loja, []))
+
+
+def _descoberto(codigo, pct, status=StatusCupom.PROVAVEL_VALIDO):
+    return CupomDescoberto(
+        Cupom(codigo, Decimal(str(pct)), TipoDesconto.PERCENTUAL),
+        status, Confianca.ALTA, ["visto no teste"],
+    )
+
+
+def _uc_com_buscador(con, coletores, buscador):
+    repo_p = RepositorioProdutoSQLite(con)
+    salvo = repo_p.salvar(Produto(nome="Echo Dot 5", categoria="eletronicos"), CONTA)
+    uc = BuscarProduto(
+        coletores, repo_p, RepositorioSKUSQLite(con), RepositorioSnapshotSQLite(con),
+        repo_cupom=RepositorioCupomSQLite(con),
+        repo_cashback=RepositorioCashbackSQLite(con),
+        buscador_cupons=buscador,
+    )
+    return uc, salvo.id
+
+
+def test_cupom_descoberto_aplica_marcado_nao_confirmado(con):
+    buscador = BuscadorCuponsFake({"ML": [_descoberto("PROMO10", 10)]})
+    coletor = ColetorFake("ML", 1, ofertas=[_oferta("Echo Dot 5", "100.00")])
+    uc, pid = _uc_com_buscador(con, [coletor], buscador)
+
+    o = asyncio.run(uc.executar(pid, CONTA)).ranking[0]
+    assert o.preco_final == Decimal("90.00")  # 10% off
+    assert o.cupom_codigo == "PROMO10"
+    assert o.cupom_confirmado is False  # descoberto, não digitado → "provável"
+
+
+def test_cupom_descoberto_expirado_nao_aplica(con):
+    buscador = BuscadorCuponsFake({"ML": [_descoberto("VELHO", 10, StatusCupom.EXPIRADO)]})
+    coletor = ColetorFake("ML", 1, ofertas=[_oferta("Echo Dot 5", "100.00")])
+    uc, pid = _uc_com_buscador(con, [coletor], buscador)
+
+    o = asyncio.run(uc.executar(pid, CONTA)).ranking[0]
+    assert o.preco_final == Decimal("100.00")  # expirado não desconta
+    assert o.cupom_codigo is None
+
+
+def test_descoberta_usa_cache_dentro_do_ttl(con):
+    buscador = BuscadorCuponsFake({"ML": [_descoberto("PROMO10", 10)]})
+    coletor = ColetorFake("ML", 1, ofertas=[_oferta("Echo Dot 5", "100.00")])
+    uc, pid = _uc_com_buscador(con, [coletor], buscador)
+
+    asyncio.run(uc.executar(pid, CONTA))
+    asyncio.run(uc.executar(pid, CONTA))
+    assert buscador.chamadas == 1  # 2ª busca reusa o cache (TTL 24h)
 
 
 # ---------- Juiz de identidade (IA) arbitra o matching ----------

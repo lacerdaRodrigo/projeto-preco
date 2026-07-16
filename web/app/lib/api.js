@@ -33,7 +33,16 @@ export const api = {
     json("/api/carteira/cupom", { method: "POST", body: JSON.stringify(dados) }),
   cadastrarCashback: (dados) =>
     json("/api/carteira/cashback", { method: "POST", body: JSON.stringify(dados) }),
+  removerCupom: (loja, codigo) => remover("/api/carteira/cupom", { loja, codigo }),
+  removerCashback: (loja, fonte) => remover("/api/carteira/cashback", { loja, fonte }),
 };
+
+// DELETE com querystring; 204 não tem corpo, então não faz .json().
+async function remover(caminho, params) {
+  const url = `${BASE}${caminho}?${new URLSearchParams(params)}`;
+  const resp = await fetch(url, { method: "DELETE" });
+  if (!resp.ok) throw new Error(`API ${resp.status}`);
+}
 
 export function reais(valor) {
   const n = Number(valor);

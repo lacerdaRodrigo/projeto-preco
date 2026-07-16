@@ -168,8 +168,21 @@ function Escadinha({ o }) {
   return (
     <div className="escadinha" title="Preço final = base à vista − cupom − cashback">
       {base !== null && <span className="deg">{reais(base)}</span>}
-      {cupom > 0 && <span className="deg desc">− cupom {reais(cupom)}</span>}
-      {cashback > 0 && <span className="deg desc">− cashback {reais(cashback)}</span>}
+      {cupom > 0 && (
+        <span className="deg desc">
+          − cupom {o.cupom_codigo ? <code className="codigo">{o.cupom_codigo}</code> : null} {reais(cupom)}
+          {o.cupom_confirmado === false && (
+            <span className="chip vitrine" style={{ marginLeft: 6 }} title="Cupom descoberto na web — provável, mas não confirmado. Teste na loja.">
+              não confirmado
+            </span>
+          )}
+        </span>
+      )}
+      {cashback > 0 && (
+        <span className="deg desc">
+          − cashback {o.cashback_fonte ? `via ${o.cashback_fonte}` : ""} {reais(cashback)}
+        </span>
+      )}
       <span className="deg final">= {reais(o.preco_final)}</span>
     </div>
   );

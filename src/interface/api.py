@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from adapters.classificadores import ClassificadorLLM
+from adapters.cupons import BuscadorCuponsSerperLLM
 from adapters.coletores.google_shopping import ColetorGoogleShopping
 from adapters.coletores.kabum import ColetorKabum
 from adapters.extratores import extrair_identidade_do_titulo
@@ -114,6 +115,11 @@ class OfertaView(BaseModel):
     preco_base: str | None = None
     desconto_cupom: str | None = None
     desconto_cashback: str | None = None
+    # Qual cupom/cashback incidiu (RN13). `cupom_confirmado=False` = cupom
+    # DESCOBERTO (não digitado por você) → desconto "provável", a UI avisa.
+    cupom_codigo: str | None = None
+    cupom_confirmado: bool = True
+    cashback_fonte: str | None = None
 
 
 class OfertaTriadaView(BaseModel):
@@ -158,8 +164,22 @@ class CashbackView(BaseModel):
     condicao: str | None
 
 
+class CupomDescobertoView(BaseModel):
+    """Cupom achado pelo buscador, com a validação por sinais."""
+
+    loja: str
+    codigo: str
+    desconto: str
+    tipo: str
+    validade: str | None
+    status: str  # provavel_valido | nao_confirmado | expirado
+    confianca: str  # alta | media | baixa
+    evidencias: list[str]
+
+
 class CarteiraView(BaseModel):
-    cupons: list[CupomView]
+    cupons: list[CupomView]  # manuais (você digitou)
+    descobertos: list[CupomDescobertoView] = []  # achados pelo buscador
     cashbacks: list[CashbackView]
 
 
@@ -186,6 +206,19 @@ def _classificador(config: Config) -> ClassificadorLLM | None:
         config.nvidia_api_key,
         config.nvidia_base_url,
         config.nvidia_model_classificador,
+    )
+
+
+def _buscador_cupons(config: Config) -> BuscadorCuponsSerperLLM | None:
+    """Descoberta automática de cupons (Serper busca + LLM extrai). Sem Serper ou
+    NVIDIA → None (só a carteira manual vale)."""
+    if not (config.serper_api_key and config.nvidia_api_key):
+        return None
+    return BuscadorCuponsSerperLLM(
+        serper_api_key=config.serper_api_key,
+        nvidia_api_key=config.nvidia_api_key,
+        nvidia_base_url=config.nvidia_base_url,
+        nvidia_model=config.nvidia_model_classificador,
     )
 
 
@@ -332,6 +365,7 @@ def buscar_agora(produto_id: int) -> ProdutoDetalhe:
             repo_cupom=RepositorioCupomSQLite(con),
             repo_cashback=RepositorioCashbackSQLite(con),
             classificador=_classificador(config),
+            buscador_cupons=_buscador_cupons(config),
         )
         try:
             resultado = asyncio.run(
@@ -406,13 +440,15 @@ def _ofertas_guardadas(
             frete_cotado=snap.frete_cotado,
             em_estoque=snap.em_estoque,
         )
-        final, base, desc_cupom, desc_cashback = _decompor(
+        final, base, desc_cupom, desc_cashback, cupom_ap, cashback_ap = _decompor(
             oferta,
             repo_cupom.ativos_por_loja(loja),
             repo_cashback.ativos_por_loja(loja),
             hoje,
             config.cashback_elegivel,
         )
+        descobertos = {d.cupom.codigo for d in repo_cupom.descobertos_por_loja(loja)}
+        cupom_codigo = cupom_ap.codigo if cupom_ap else None
         linhas.append(
             (
                 final,
@@ -424,6 +460,9 @@ def _ofertas_guardadas(
                     preco_base=str(base),
                     desconto_cupom=str(desc_cupom) if desc_cupom > 0 else None,
                     desconto_cashback=str(desc_cashback) if desc_cashback > 0 else None,
+                    cupom_codigo=cupom_codigo,
+                    cupom_confirmado=cupom_codigo is not None and cupom_codigo not in descobertos,
+                    cashback_fonte=cashback_ap.fonte if cashback_ap else None,
                     em_estoque=snap.em_estoque,
                     score_match=sku.score_match,
                     coletado_em=snap.coletado_em.isoformat() if snap.coletado_em else None,
@@ -440,7 +479,8 @@ def listar_carteira() -> CarteiraView:
     try:
         repo_cupom = RepositorioCupomSQLite(con)
         repo_cashback = RepositorioCashbackSQLite(con)
-        
+        manuais, descobertos = repo_cupom.listar_carteira()
+
         cupons = [
             CupomView(
                 loja=loja,
@@ -449,23 +489,36 @@ def listar_carteira() -> CarteiraView:
                 tipo=c.tipo.value,
                 valor_min=str(c.valor_min),
                 validade=c.validade.isoformat() if c.validade else None,
-                primeira_compra=c.primeira_compra
+                primeira_compra=c.primeira_compra,
             )
-            for loja, c in repo_cupom.todos()
+            for loja, c in manuais
         ]
-        
+        cupons_descobertos = [
+            CupomDescobertoView(
+                loja=loja,
+                codigo=d.cupom.codigo,
+                desconto=str(d.cupom.desconto),
+                tipo=d.cupom.tipo.value,
+                validade=d.cupom.validade.isoformat() if d.cupom.validade else None,
+                status=d.status.value,
+                confianca=d.confianca.value,
+                evidencias=d.evidencias,
+            )
+            for loja, d in descobertos
+        ]
         cashbacks = [
             CashbackView(
                 loja=loja,
                 fonte=c.fonte,
                 percentual=str(c.percentual),
                 teto=str(c.teto) if c.teto else None,
-                condicao=c.condicao
+                condicao=c.condicao,
             )
             for loja, c in repo_cashback.todos()
         ]
-        
-        return CarteiraView(cupons=cupons, cashbacks=cashbacks)
+        return CarteiraView(
+            cupons=cupons, descobertos=cupons_descobertos, cashbacks=cashbacks
+        )
     finally:
         con.close()
 
@@ -504,5 +557,25 @@ def cadastrar_cashback(dados: CashbackView) -> CashbackView:
         )
         RepositorioCashbackSQLite(con).salvar(dados.loja, c)
         return dados
+    finally:
+        con.close()
+
+
+@app.delete("/api/carteira/cupom", status_code=204)
+def remover_cupom(loja: str, codigo: str) -> None:
+    con, _ = _abrir()
+    try:
+        if not RepositorioCupomSQLite(con).remover(loja, codigo):
+            raise HTTPException(404, f"cupom {codigo!r} não encontrado em {loja!r}")
+    finally:
+        con.close()
+
+
+@app.delete("/api/carteira/cashback", status_code=204)
+def remover_cashback(loja: str, fonte: str) -> None:
+    con, _ = _abrir()
+    try:
+        if not RepositorioCashbackSQLite(con).remover(loja, fonte):
+            raise HTTPException(404, f"cashback {fonte!r} não encontrado em {loja!r}")
     finally:
         con.close()

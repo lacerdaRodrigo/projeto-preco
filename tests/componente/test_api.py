@@ -106,3 +106,21 @@ def test_arquivar_some_da_lista(client):
 def test_obter_inexistente_da_404(client):
     assert client.get("/api/produtos/999").status_code == 404
     assert client.delete("/api/produtos/999").status_code == 404
+
+
+def test_carteira_cadastra_e_remove_cupom(client):
+    novo = {
+        "loja": "KaBuM!", "codigo": "NINJA15", "desconto": "15", "tipo": "percentual",
+        "valor_min": "0", "validade": None, "primeira_compra": False,
+    }
+    assert client.post("/api/carteira/cupom", json=novo).status_code == 201
+    carteira = client.get("/api/carteira").json()
+    assert [c["codigo"] for c in carteira["cupons"]] == ["NINJA15"]
+
+    # DELETE some da carteira; remover de novo dá 404.
+    r = client.delete("/api/carteira/cupom", params={"loja": "KaBuM!", "codigo": "NINJA15"})
+    assert r.status_code == 204
+    assert client.get("/api/carteira").json()["cupons"] == []
+    assert client.delete(
+        "/api/carteira/cupom", params={"loja": "KaBuM!", "codigo": "NINJA15"}
+    ).status_code == 404
