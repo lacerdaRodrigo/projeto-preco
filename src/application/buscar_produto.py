@@ -200,7 +200,13 @@ class BuscarProduto:
         ranking = []
         for (loja_id, loja_origem), candidatas in aceitas.items():
             await self._garantir_cupons(loja_origem)  # descobre se o cache expirou
-            cupons = self._cupons.ativos_por_loja(loja_origem) if self._cupons else []
+            # Só cupons que valem PARA a categoria deste produto (cupom de "celular"
+            # não desconta uma geladeira). Cupom sem categoria = geral, vale.
+            cupons = [
+                c
+                for c in (self._cupons.ativos_por_loja(loja_origem) if self._cupons else [])
+                if c.aplica_na_categoria(produto.categoria)
+            ]
             cashbacks = (
                 self._cashbacks.ativos_por_loja(loja_origem) if self._cashbacks else []
             )

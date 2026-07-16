@@ -4,7 +4,11 @@
 
 **Status:** protótipo de front-end navegável, com dados simulados (mock). Sem integração real com Supabase, worker Python, coletores ou GitHub Actions.
 
-> **Atualização 15/07/2026 — o front virou app real.** A direção "Clean" foi implementada em **Next.js** (`web/`), integrada à API FastAPI (não é mais mock). Telas ativas: **Produtos** (lista com card de mini-comparação "cadastrado × melhor preço" + nº de lojas), **Cadastrar** (título-first: cola o título, o backend extrai a identidade), **Dashboard do produto** (comparação por loja com linha de referência, chips confirmado/vitrine, e o **funil visível** "por que outras lojas ficaram de fora"). A API `/api/produtos` devolve `melhor_preco`/`num_lojas` pro card. **Ainda não implementado:** Login, Alertas, Configurações e o gráfico de evolução 30 dias (precisa de endpoint de histórico — os snapshots já existem no banco).
+> **Atualização 15/07/2026 — o front virou app real.** A direção "Clean" foi implementada em **Next.js** (`web/`), integrada à API FastAPI (não é mais mock). Telas ativas: **Produtos** (lista com card de mini-comparação "cadastrado × melhor preço" + nº de lojas), **Cadastrar** (título-first: cola o título, o backend extrai a identidade), **Dashboard do produto** (comparação por loja com linha de referência, chips confirmado/vitrine, **escadinha de desconto** base − cupom − cashback, e o **funil visível** "por que outras lojas ficaram de fora"), **Carteira**. A API `/api/produtos` devolve `melhor_preco`/`num_lojas` pro card.
+>
+> **Cupom/cashback na UI:** a **escadinha** nomeia o cupom aplicado + status ("não confirmado" quando descoberto); no card da oferta, ao lado de "Abrir na loja", chips **copiáveis** com os cupons descobertos da loja (cor por status, "vale para: \<categorias\>" no tooltip). A tela **Carteira** lista os cupons **descobertos por loja** (status/confiança/evidências/categorias, com 🗑 pra remover) e o form de **cashback manual**. Cupons são descobertos automáticos na busca; cashback é digitado.
+>
+> **Ainda não implementado:** Login, Alertas, Configurações e o gráfico de evolução 30 dias (precisa de endpoint de histórico — os snapshots já existem no banco).
 
 ---
 

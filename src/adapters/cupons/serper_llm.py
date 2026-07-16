@@ -36,10 +36,13 @@ _SISTEMA = (
     "Recebe a LOJA e uma lista de TRECHOS numerados (resultados de busca). "
     "Devolva APENAS um objeto JSON válido, sem texto em volta, sem markdown: "
     '{"cupons": [{"codigo": "", "tipo": "", "desconto": "", "validade": "", '
-    '"sinal_frescor": ""}]}. '
+    '"categorias": [], "sinal_frescor": ""}]}. '
     "codigo = o código do cupom em MAIÚSCULAS (ex.: 'NINJA15'); só códigos reais, "
     "não invente. tipo = 'percentual' ou 'fixo'. desconto = só o número (ex.: "
     "'15'). validade = 'AAAA-MM-DD' quando o trecho informar, senão ''. "
+    "categorias = lista das categorias em que o cupom vale, em minúsculo e simples "
+    "(ex.: ['celular','eletronicos'] ou ['informatica']); se o trecho não restringe "
+    "a categoria, use []. "
     "sinal_frescor = curto, quando o trecho indicar que o cupom foi verificado/"
     "funcionou recentemente (ex.: 'verificado hoje', 'funcionou para 87%'), senão ''."
 )
@@ -174,6 +177,7 @@ class BuscadorCuponsSerperLLM:
                 tipo=_tipo(bruto.get("tipo")),
                 valor_min=ZERO,
                 validade=validade,
+                categorias=_categorias(bruto.get("categorias")),
             )
             status, confianca, evidencias = self._avaliar(
                 validade, len(fontes), tem_frescor, _str(bruto.get("sinal_frescor"))
@@ -249,6 +253,14 @@ def _str(valor: object) -> str | None:
 
 def _tipo(valor: object) -> TipoDesconto:
     return TipoDesconto.FIXO if _str(valor) == "fixo" else TipoDesconto.PERCENTUAL
+
+
+def _categorias(valor: object) -> tuple[str, ...]:
+    """Lista de categorias em minúsculo; qualquer coisa fora do padrão → ()."""
+    if not isinstance(valor, list):
+        return ()
+    limpas = [c.strip().lower() for c in valor if isinstance(c, str) and c.strip()]
+    return tuple(dict.fromkeys(limpas))  # únicas, na ordem
 
 
 def _decimal(valor: object) -> Decimal:

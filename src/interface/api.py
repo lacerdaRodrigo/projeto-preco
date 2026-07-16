@@ -40,6 +40,7 @@ from application.buscar_produto import (
     ResultadoBusca,
     _decompor,
 )
+from application.buscadores import StatusCupom
 from application.coletores import Coletor
 from config import Config, carregar_config
 from datetime import date
@@ -120,6 +121,8 @@ class OfertaView(BaseModel):
     cupom_codigo: str | None = None
     cupom_confirmado: bool = True
     cashback_fonte: str | None = None
+    # Cupons descobertos da loja (pra copiar ao lado de "Abrir na loja").
+    cupons_loja: list[CupomLojaView] = []
 
 
 class OfertaTriadaView(BaseModel):
@@ -175,6 +178,18 @@ class CupomDescobertoView(BaseModel):
     status: str  # provavel_valido | nao_confirmado | expirado
     confianca: str  # alta | media | baixa
     evidencias: list[str]
+    categorias: list[str]  # [] = geral (vale pra tudo)
+
+
+class CupomLojaView(BaseModel):
+    """Cupom da loja mostrado no card da oferta (ao lado de 'Abrir na loja')."""
+
+    codigo: str
+    desconto: str
+    tipo: str
+    status: str
+    categorias: list[str]
+    aplicavel: bool  # vale pra ESTE produto (categoria bate + provável válido)
 
 
 class CarteiraView(BaseModel):
@@ -264,7 +279,7 @@ def listar_produtos() -> list[ProdutoView]:
         for p in produtos:
             view = _produto_view(p)
             if p.id is not None:
-                ofertas = _ofertas_guardadas(con, p.id, config)  # ordenado: barato 1º
+                ofertas = _ofertas_guardadas(con, p.id, config, p.categoria)  # barato 1º
                 if ofertas:
                     view.melhor_preco = ofertas[0].preco_final
                     view.num_lojas = len(ofertas)
@@ -347,7 +362,7 @@ def obter_produto(produto_id: int) -> ProdutoDetalhe:
         produto = RepositorioProdutoSQLite(con).obter(produto_id, CONTA_PADRAO)
         if produto is None:
             raise HTTPException(404, f"produto {produto_id} não encontrado")
-        ofertas = _ofertas_guardadas(con, produto_id, config)
+        ofertas = _ofertas_guardadas(con, produto_id, config, produto.categoria)
         return ProdutoDetalhe(produto=_produto_view(produto), ofertas=ofertas)
     finally:
         con.close()
@@ -380,7 +395,9 @@ def buscar_agora(produto_id: int) -> ProdutoDetalhe:
             raise HTTPException(404, str(e)) from e
         # Lê de volta do banco: mesma forma/ordem do GET, já com o timestamp. O
         # flag "preço confirmado" não é persistido, então vem do ranking (por loja).
-        ofertas = _ofertas_guardadas(con, produto_id, config)
+        ofertas = _ofertas_guardadas(
+            con, produto_id, config, resultado.produto.categoria
+        )
         confirmacao = {o.loja: o.preco_confirmado for o in resultado.ranking}
         for oferta in ofertas:
             oferta.preco_confirmado = confirmacao.get(oferta.loja, True)
@@ -411,7 +428,7 @@ def _diagnostico_view(resultado: ResultadoBusca) -> DiagnosticoView:
 
 
 def _ofertas_guardadas(
-    con: sqlite3.Connection, produto_id: int, config: Config
+    con: sqlite3.Connection, produto_id: int, config: Config, categoria: str
 ) -> list[OfertaView]:
     """Ofertas persistidas (SKU + último snapshot), com a CARTEIRA aplicada
     (melhor cupom + melhor cashback) e a escadinha de desconto, ordenadas pela
@@ -440,14 +457,32 @@ def _ofertas_guardadas(
             frete_cotado=snap.frete_cotado,
             em_estoque=snap.em_estoque,
         )
+        aplicaveis = [
+            c for c in repo_cupom.ativos_por_loja(loja) if c.aplica_na_categoria(categoria)
+        ]
         final, base, desc_cupom, desc_cashback, cupom_ap, cashback_ap = _decompor(
             oferta,
-            repo_cupom.ativos_por_loja(loja),
+            aplicaveis,
             repo_cashback.ativos_por_loja(loja),
             hoje,
             config.cashback_elegivel,
         )
-        descobertos = {d.cupom.codigo for d in repo_cupom.descobertos_por_loja(loja)}
+        descobertos_loja = repo_cupom.descobertos_por_loja(loja)
+        descobertos = {d.cupom.codigo for d in descobertos_loja}
+        cupons_loja = [
+            CupomLojaView(
+                codigo=d.cupom.codigo,
+                desconto=str(d.cupom.desconto),
+                tipo=d.cupom.tipo.value,
+                status=d.status.value,
+                categorias=list(d.cupom.categorias),
+                aplicavel=(
+                    d.status is StatusCupom.PROVAVEL_VALIDO
+                    and d.cupom.aplica_na_categoria(categoria)
+                ),
+            )
+            for d in descobertos_loja
+        ]
         cupom_codigo = cupom_ap.codigo if cupom_ap else None
         linhas.append(
             (
@@ -463,6 +498,7 @@ def _ofertas_guardadas(
                     cupom_codigo=cupom_codigo,
                     cupom_confirmado=cupom_codigo is not None and cupom_codigo not in descobertos,
                     cashback_fonte=cashback_ap.fonte if cashback_ap else None,
+                    cupons_loja=cupons_loja,
                     em_estoque=snap.em_estoque,
                     score_match=sku.score_match,
                     coletado_em=snap.coletado_em.isoformat() if snap.coletado_em else None,
@@ -503,6 +539,7 @@ def listar_carteira() -> CarteiraView:
                 status=d.status.value,
                 confianca=d.confianca.value,
                 evidencias=d.evidencias,
+                categorias=list(d.cupom.categorias),
             )
             for loja, d in descobertos
         ]

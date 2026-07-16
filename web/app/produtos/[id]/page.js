@@ -144,8 +144,9 @@ export default function Dashboard() {
                 {refPct !== null && <i className="ref-linha" style={{ left: `${refPct}%` }} />}
               </div>
               <Escadinha o={o} />
-              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                 <a className="link-loja" href={o.url} target="_blank" rel="noreferrer">abrir na loja ↗</a>
+                <CuponsLoja cupons={o.cupons_loja} />
                 {o.coletado_em && <span className="titulo">coletado {quando(o.coletado_em)}</span>}
               </div>
             </div>
@@ -155,6 +156,31 @@ export default function Dashboard() {
 
       <Funil diagnostico={dados.diagnostico} />
     </main>
+  );
+}
+
+// Cupons descobertos da loja, ao lado de "Abrir na loja" — pra copiar o código e
+// usar no checkout. Clica → copia. Cor por status; "vale para: X" no title.
+function CuponsLoja({ cupons }) {
+  if (!cupons || cupons.length === 0) return null;
+  const _CLS = { provavel_valido: "confirmado", nao_confirmado: "neutro", expirado: "vitrine" };
+  function copiar(codigo) {
+    if (navigator.clipboard) navigator.clipboard.writeText(codigo);
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      <span className="titulo">cupom:</span>
+      {cupons.map((c, i) => {
+        const cats = c.categorias?.length > 0 ? c.categorias.join(", ") : "geral";
+        const dica = `${c.tipo === "percentual" ? Number(c.desconto) + "%" : reais(c.desconto)} · vale para: ${cats} · clique pra copiar`;
+        return (
+          <button key={i} className={`chip ${_CLS[c.status] || "neutro"} cupom-copiar`}
+            title={dica} onClick={() => copiar(c.codigo)}>
+            {c.codigo} 📋
+          </button>
+        );
+      })}
+    </span>
   );
 }
 

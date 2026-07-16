@@ -18,13 +18,16 @@ class TipoDesconto(str, Enum):
 @dataclass(frozen=True)
 class Cupom:
     """Representa um cupom de desconto oferecido por uma loja."""
-    
+
     codigo: str
     desconto: Decimal
     tipo: TipoDesconto
     valor_min: Decimal = ZERO
     validade: date | None = None
     primeira_compra: bool = False
+    # Categorias em que o cupom vale (ex.: ("celular", "eletronicos")). VAZIO =
+    # geral (vale pra tudo). PRD §15 "categorias aceitas". Guardadas em minúsculo.
+    categorias: tuple[str, ...] = ()
 
     def is_valido(
         self, valor_base: Decimal, data_atual: date, is_primeira_compra: bool = False
@@ -37,6 +40,15 @@ class Cupom:
         if self.primeira_compra and not is_primeira_compra:
             return False
         return True
+
+    def aplica_na_categoria(self, categoria: str | None) -> bool:
+        """O cupom vale para um produto desta categoria? Cupom sem categorias =
+        geral (vale pra tudo). Produto sem categoria → não bloqueia (na dúvida,
+        deixa passar; é só desconto, e vai marcado 'não confirmado' se descoberto)."""
+        if not self.categorias or not categoria:
+            return True
+        alvo = categoria.strip().lower()
+        return any(alvo == c or alvo in c or c in alvo for c in self.categorias)
 
     def calcular_desconto(self, valor_base: Decimal) -> Decimal:
         """Calcula o valor nominal do desconto (nunca maior que o próprio produto)."""

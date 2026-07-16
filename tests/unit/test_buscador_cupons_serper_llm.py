@@ -66,6 +66,22 @@ def test_visto_em_duas_fontes_vira_provavel_valido():
 
 
 @respx.mock
+def test_extrai_categorias_do_cupom():
+    respx.post(_SERPER).mock(return_value=_serper_resp([
+        {"title": "CEL10 celular", "snippet": "CEL10 para celulares", "link": "https://cuponomia.com.br/a"},
+        {"title": "CEL10", "snippet": "cupom CEL10", "link": "https://pelando.com.br/b"},
+    ]))
+    respx.post(_NVIDIA).mock(return_value=_llm_resp([
+        {"codigo": "CEL10", "tipo": "percentual", "desconto": "10",
+         "categorias": ["celular", "eletronicos"], "sinal_frescor": ""},
+    ]))
+    d = _rodar()[0]
+    assert d.cupom.categorias == ("celular", "eletronicos")
+    assert d.cupom.aplica_na_categoria("celular") is True
+    assert d.cupom.aplica_na_categoria("geladeira") is False
+
+
+@respx.mock
 def test_validade_vencida_vira_expirado():
     respx.post(_SERPER).mock(return_value=_serper_resp([
         {"title": "VELHO10", "snippet": "cupom VELHO10", "link": "https://cuponomia.com.br/x"},

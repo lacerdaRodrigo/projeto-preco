@@ -288,9 +288,9 @@ class BuscadorCuponsFake:
         return list(self._por_loja.get(loja, []))
 
 
-def _descoberto(codigo, pct, status=StatusCupom.PROVAVEL_VALIDO):
+def _descoberto(codigo, pct, status=StatusCupom.PROVAVEL_VALIDO, categorias=()):
     return CupomDescoberto(
-        Cupom(codigo, Decimal(str(pct)), TipoDesconto.PERCENTUAL),
+        Cupom(codigo, Decimal(str(pct)), TipoDesconto.PERCENTUAL, categorias=categorias),
         status, Confianca.ALTA, ["visto no teste"],
     )
 
@@ -326,6 +326,27 @@ def test_cupom_descoberto_expirado_nao_aplica(con):
     o = asyncio.run(uc.executar(pid, CONTA)).ranking[0]
     assert o.preco_final == Decimal("100.00")  # expirado não desconta
     assert o.cupom_codigo is None
+
+
+def test_cupom_de_outra_categoria_nao_aplica(con):
+    # Produto é "eletronicos"; cupom só de "celular" NÃO desconta (bloqueia+informa).
+    buscador = BuscadorCuponsFake({"ML": [_descoberto("SOCEL", 20, categorias=("celular",))]})
+    coletor = ColetorFake("ML", 1, ofertas=[_oferta("Echo Dot 5", "100.00")])
+    uc, pid = _uc_com_buscador(con, [coletor], buscador)
+
+    o = asyncio.run(uc.executar(pid, CONTA)).ranking[0]
+    assert o.preco_final == Decimal("100.00")  # categoria não bate → não desconta
+    assert o.cupom_codigo is None
+
+
+def test_cupom_da_categoria_certa_aplica(con):
+    buscador = BuscadorCuponsFake({"ML": [_descoberto("ELE20", 20, categorias=("eletronicos",))]})
+    coletor = ColetorFake("ML", 1, ofertas=[_oferta("Echo Dot 5", "100.00")])
+    uc, pid = _uc_com_buscador(con, [coletor], buscador)
+
+    o = asyncio.run(uc.executar(pid, CONTA)).ranking[0]
+    assert o.preco_final == Decimal("80.00")  # eletronicos bate → 20% off
+    assert o.cupom_codigo == "ELE20"
 
 
 def test_descoberta_usa_cache_dentro_do_ttl(con):

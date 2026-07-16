@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS cupom (
     confianca TEXT,       -- alta | media | baixa
     evidencias TEXT,      -- JSON: ["visto em 3 sites", ...]
     descoberto_em TEXT,   -- ISO; usado pra TTL do cache
+    categorias TEXT,      -- JSON: ["celular","eletronicos"]; vazio/null = geral
     UNIQUE (loja_origem, codigo)
 );
 
@@ -124,6 +125,7 @@ _COLUNAS_CUPOM_NOVAS = (
     ("confianca", "TEXT"),
     ("evidencias", "TEXT"),
     ("descoberto_em", "TEXT"),
+    ("categorias", "TEXT"),
 )
 
 
@@ -469,14 +471,16 @@ class RepositorioCupomSQLite:
         self._con.execute(
             """INSERT INTO cupom
                  (loja_origem, codigo, desconto, tipo, valor_min, validade,
-                  primeira_compra, origem, status, confianca, evidencias, descoberto_em)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', NULL, NULL, NULL, NULL)
+                  primeira_compra, origem, status, confianca, evidencias,
+                  descoberto_em, categorias)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', NULL, NULL, NULL, NULL, ?)
                ON CONFLICT (loja_origem, codigo) DO UPDATE SET
                  desconto = excluded.desconto,
                  tipo = excluded.tipo,
                  valor_min = excluded.valor_min,
                  validade = excluded.validade,
                  primeira_compra = excluded.primeira_compra,
+                 categorias = excluded.categorias,
                  origem = 'manual',
                  status = NULL, confianca = NULL, evidencias = NULL, descoberto_em = NULL""",
             (
@@ -487,6 +491,7 @@ class RepositorioCupomSQLite:
                 _txt(cupom.valor_min),
                 cupom.validade.isoformat() if cupom.validade else None,
                 int(cupom.primeira_compra),
+                json.dumps(list(cupom.categorias)),
             ),
         )
         self._con.commit()
@@ -500,8 +505,9 @@ class RepositorioCupomSQLite:
         self._con.execute(
             """INSERT INTO cupom
                  (loja_origem, codigo, desconto, tipo, valor_min, validade,
-                  primeira_compra, origem, status, confianca, evidencias, descoberto_em)
-               VALUES (?, ?, ?, ?, ?, ?, 0, 'descoberto', ?, ?, ?, ?)
+                  primeira_compra, origem, status, confianca, evidencias,
+                  descoberto_em, categorias)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 'descoberto', ?, ?, ?, ?, ?)
                ON CONFLICT (loja_origem, codigo) DO UPDATE SET
                  desconto = excluded.desconto,
                  tipo = excluded.tipo,
@@ -509,7 +515,8 @@ class RepositorioCupomSQLite:
                  status = excluded.status,
                  confianca = excluded.confianca,
                  evidencias = excluded.evidencias,
-                 descoberto_em = excluded.descoberto_em
+                 descoberto_em = excluded.descoberto_em,
+                 categorias = excluded.categorias
                WHERE cupom.origem = 'descoberto'""",
             (
                 loja_nome,
@@ -522,6 +529,7 @@ class RepositorioCupomSQLite:
                 descoberto.confianca.value,
                 json.dumps(descoberto.evidencias),
                 quando.isoformat(),
+                json.dumps(list(c.categorias)),
             ),
         )
         self._con.commit()
@@ -548,6 +556,7 @@ def _linha_para_descoberto(linha: sqlite3.Row) -> CupomDescoberto:
 def _linha_para_cupom(linha: sqlite3.Row) -> Cupom:
     from domain.cupom import TipoDesconto
     validade_str = linha["validade"]
+    cats = linha["categorias"] if "categorias" in linha.keys() else None
     return Cupom(
         codigo=linha["codigo"],
         desconto=_dec(linha["desconto"]) or Decimal("0"),
@@ -555,6 +564,7 @@ def _linha_para_cupom(linha: sqlite3.Row) -> Cupom:
         valor_min=_dec(linha["valor_min"]) or Decimal("0"),
         validade=datetime.fromisoformat(validade_str).date() if validade_str else None,
         primeira_compra=bool(linha["primeira_compra"]),
+        categorias=tuple(json.loads(cats)) if cats else (),
     )
 
 class RepositorioCashbackSQLite:

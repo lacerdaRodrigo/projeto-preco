@@ -572,6 +572,8 @@ O sistema **busca os cupons de cada loja** e os apresenta por loja/produto (ex.:
 - Havendo vários válidos, aplica o **melhor automaticamente** e **lista os outros** (RN13).
 - O preço exibido na comparação já é o **preço final com o melhor cupom aplicado**, mostrando qual código foi usado.
 
+**Atualização — descoberta de cupons implementada (por SINAIS, não por checkout).** O Rodrigo não digita cupom: eles vêm **automáticos**. Na busca, para **cada loja do ranking**, um buscador plugável (porta `application/buscadores.py`; adaptador `adapters/cupons/serper_llm.py`) faz `Serper "cupom <loja> desconto"` → o LLM extrai códigos + **categorias** dos snippets de sites de cupom (Cuponomia/Pelando/Méliuz). Como o CLAUDE.md **proíbe tocar o checkout**, a validade não é garantida — é **validada por sinais**: `status` (`provável válido`/`não confirmado`/`expirado`) por validade + frescor da fonte + corroboração entre sites, com guarda anti-clickbait (% ≥50 não auto-aplica). Só o melhor **provável válido** entra no preço, **marcado "não confirmado"** (mesma filosofia do preço de vitrine), e **só na categoria certa** (cupom de "celular" não desconta geladeira — `Cupom.categorias`/`aplica_na_categoria`). Cache por **TTL (24h)** por loja. UI mostra o cupom na escadinha, chips copiáveis ao lado de "Abrir na loja", e a **Carteira** lista os descobertos com status/evidências/categorias (+ remover). **Cashback continua manual** (elegibilidade pessoal atrás de login; descoberta fica pra depois). Detalhes no `plano.md`.
+
 ---
 
 ## 16. Módulo: Preço final e comparação

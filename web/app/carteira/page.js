@@ -109,6 +109,9 @@ function CuponsDescobertos({ itens, onRemover }) {
               {c.validade && ` · até ${c.validade}`}
               {c.evidencias?.length > 0 && ` · ${c.evidencias.join(" · ")}`}
             </div>
+            <div className="titulo" style={{ fontSize: 12 }}>
+              vale para: {c.categorias?.length > 0 ? c.categorias.join(", ") : "geral"}
+            </div>
           </div>
         );
       })}
