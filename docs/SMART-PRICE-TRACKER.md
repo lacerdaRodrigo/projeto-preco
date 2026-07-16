@@ -559,6 +559,8 @@ flowchart TD
 
 **O dataset rotulado é um ativo de primeira classe.** Pares "é / não é o mesmo produto" (Vivobook 8GB ≠ 16GB) formam o teste de regressão do matcher. Cada erro real que você corrige na fila "revisar" **vira um caso novo** — o matcher melhora sem regredir. É o que protege o coração do sistema ao longo do tempo (seção 23).
 
+**Atualização — validação por IA já implementada (adiantada do roadmap §20).** A decisão de identidade ("é o mesmo produto?") passou a ser da **IA**, não do backend por categoria: um **classificador LLM** (NVIDIA, `meta/llama-3.1-8b-instruct`) atrás de porta (`application/classificadores.py`, adaptador em `adapters/classificadores/llm.py`) compara **marca + linha + modelo/geração** e **ignora specs** (cor, bateria, microfone). Roda 1× em lote por busca; a IA arbitra a zona ambígua, o determinístico acima segue como **fallback** (sem chave IA) e para os sinais certos (EAN bate, veto do usuário/acessório). A **extração** de identidade do título (marca/modelo/specs) no cadastro também usa LLM, com a heurística determinística de fallback. Sem distinção por categoria no backend. Detalhes no `plano.md`.
+
 ---
 
 ## 15. Módulo: Cupons
@@ -657,6 +659,8 @@ Opcional e **plugável** — o sistema funciona sem IA (heurística). A IA entra
 | Aprendizado de preferência | Prioriza lojas que você costuma comprar | V4 |
 
 > Se usar a API da Anthropic, consulte a skill **claude-api** para IDs de modelo e boas práticas antes de escrever o código.
+
+**Atualização — IA já ativa (adiantada do roadmap).** Via **NVIDIA** (endpoint OpenAI-compatível, chave no `.env`; modelo `meta/llama-3.1-8b-instruct`, ~1,2s e confiável — o `nemotron-49b` de raciocínio falhava por timeout), dois usos já em produção local: (1) **extração de identidade** do título no cadastro; (2) **classificador de identidade** que valida cada oferta na busca ("mesmo produto?", §14). Ambos degradam limpo pra heurística/determinístico se a chave faltar. Modelos configuráveis por `NVIDIA_MODEL`/`NVIDIA_MODEL_CLASSIFICADOR`.
 
 ---
 

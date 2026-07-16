@@ -23,6 +23,13 @@ export default function Produtos() {
     }
   }
 
+  const comLojas = produtos ? produtos.filter((p) => p.num_lojas > 0) : [];
+  const economia = comLojas.reduce((soma, p) => {
+    if (!p.preco_referencia || !p.melhor_preco) return soma;
+    const dif = Number(p.preco_referencia) - Number(p.melhor_preco);
+    return soma + (dif > 0 ? dif : 0);
+  }, 0);
+
   return (
     <main className="container">
       <div className="cabecalho">
@@ -30,6 +37,9 @@ export default function Produtos() {
         <div className="espaco" />
         <Link href="/cadastrar" className="btn">+ Novo produto</Link>
       </div>
+      <p className="subtitulo">
+        Cole o título, o sistema busca nas lojas BR e valida se é o produto certo.
+      </p>
 
       {erro && (
         <div className="card" style={{ color: "var(--vermelho)" }}>
@@ -42,6 +52,16 @@ export default function Produtos() {
           <div className="card stat">
             <div className="rotulo">Produtos monitorados</div>
             <div className="valor">{produtos.length}</div>
+          </div>
+          <div className="card stat">
+            <div className="rotulo">Com ofertas encontradas</div>
+            <div className="valor">{comLojas.length}</div>
+          </div>
+          <div className="card stat">
+            <div className="rotulo">Economia vs. referência</div>
+            <div className="valor" style={{ color: economia > 0 ? "var(--verde)" : undefined }}>
+              {reais(economia)}
+            </div>
           </div>
         </div>
       )}
@@ -62,11 +82,9 @@ export default function Produtos() {
               <div className="categoria">
                 {p.categoria}{p.marca ? ` · ${p.marca}` : ""}
               </div>
-              {p.preco_referencia && (
-                <div className="categoria" style={{ marginTop: 6 }}>
-                  referência: <strong>{reais(p.preco_referencia)}</strong>
-                </div>
-              )}
+
+              <MiniComparacao produto={p} />
+
               <div className="rodape">
                 <Link href={`/produtos/${p.id}`} className="btn secundario">Ver ofertas</Link>
                 <button className="btn fantasma" onClick={() => arquivar(p.id, p.nome)}>
@@ -78,5 +96,51 @@ export default function Produtos() {
         </div>
       )}
     </main>
+  );
+}
+
+// O elemento central de clareza: no card, ver de relance "cadastrado × melhor".
+function MiniComparacao({ produto }) {
+  const referencia = produto.preco_referencia ? Number(produto.preco_referencia) : null;
+  const melhor = produto.melhor_preco ? Number(produto.melhor_preco) : null;
+
+  if (!melhor) {
+    return <div className="mini-vazio">Aguardando busca — abra e clique em “Buscar agora”.</div>;
+  }
+
+  const escala = Math.max(melhor, referencia || 0) || 1;
+  const economia = referencia !== null ? referencia - melhor : null;
+
+  return (
+    <div className="mini-comp">
+      <div className="mini-linha">
+        <div className="mini-topo">
+          <span className="rot">Melhor preço</span>
+          <span className="pill-lojas">{produto.num_lojas} loja{produto.num_lojas > 1 ? "s" : ""}</span>
+          <span className="val" style={{ color: "var(--verde)" }}>{reais(melhor)}</span>
+        </div>
+        <div className="mini-track">
+          <span className="best" style={{ width: `${(melhor / escala) * 100}%` }} />
+        </div>
+      </div>
+
+      {referencia !== null && (
+        <div className="mini-linha">
+          <div className="mini-topo">
+            <span className="rot">Cadastrado</span>
+            <span className="val">{reais(referencia)}</span>
+          </div>
+          <div className="mini-track">
+            <span className="ref" style={{ width: `${(referencia / escala) * 100}%` }} />
+          </div>
+        </div>
+      )}
+
+      {economia !== null && (
+        <span className={`mini-eco${economia >= 0 ? "" : " acima"}`}>
+          {economia >= 0 ? "▼" : "▲"} {reais(Math.abs(economia))} {economia >= 0 ? "abaixo" : "acima"} do cadastrado
+        </span>
+      )}
+    </div>
   );
 }

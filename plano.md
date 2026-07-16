@@ -3,6 +3,20 @@
 > Origem: sessão de planejamento (14/07/2026). Complementa `SMART-PRICE-TRACKER.md` §13 (busca) e §14 (matching); regras RN01–RN16 continuam valendo.
 > **Este documento vai para o PC onde o código já existe: adapte ao que está implementado (contrato Coletor, matcher, repositórios) — não crie caminho paralelo nem reescreva o que funciona.**
 
+## Estado atual — o que já foi feito (atualizado 15/07/2026)
+
+A esteira do §3 está **implementada e rodando** (CLI + API + front). O que mudou desde o plano original:
+
+1. **Extração por LLM (NVIDIA) é o caminho principal** — `adapters/extratores/llm.py` (`ExtratorLLM`), composto com a heurística como fallback (`extrair_identidade_do_titulo`). Título → `{marca, linha, modelo, part_number, categoria, gpu, cpu, ram, armazenamento, cor}`. Modelo: **`meta/llama-3.1-8b-instruct`** (~1.2s, confiável; o nemotron-49B de raciocínio falhava ~50% por timeout). Roda 1× no cadastro, resultado persistido. Sem chave → heurística (degrada limpo).
+2. **Identidade quem valida é a IA, não o backend por categoria** (decisão firme do Rodrigo). `application/classificadores.py` (porta) + `adapters/classificadores/llm.py` (`ClassificadorLLM`): 1 chamada em LOTE por busca, alvo × N ofertas → `mesmo`/`diferente`. Prompt **spec-agnóstico** (compara só marca+linha+modelo/número; ignora cor/bateria/microfone; "Wave 200 Tws" = "Wave 200TWS"). `_decidir` combina: EAN/veto = determinístico manda; senão a IA arbitra; sem IA/opinião = fallback determinístico. Substitui a lógica de "gate por categoria" na zona ambígua — ver [[ia-valida-identidade-e-lojas-br]].
+3. **Coletor: rede de segurança BR** — `_LOJAS_BR_CONHECIDAS` (Casas Bahia, Carrefour, Magalu, ML, Amazon, KaBuM, Pontofrio, Shopee...): loja renomada entra como **vitrine** mesmo sem resolver a página `.br` (antes, sem página, dava "0 lojas"). Estrangeira sem página nem allowlist → fora. Preço confirmado quando lê a página; senão vitrine marcada (`preco_confirmado=False`).
+4. **Front (Next.js) polido** — card da lista com **mini-comparação "cadastrado × melhor preço"** + nº de lojas (API `/api/produtos` passou a devolver `melhor_preco`/`num_lojas`); paleta Clean, chips confirmado/vitrine, funil visível. Ver `docs/DESIGN-SUMMARY.md`.
+5. **Cupom + cashback (carteira)** — `domain/cupom.py` + `domain/cashback.py` (melhor cupom válido; melhor cashback elegível por `CASHBACK_ELEGIVEL` no `.env`), tabelas SQLite, comandos CLI (`cupom`/`cashback`), endpoints `/api/carteira` (+ POST cupom/cashback). Preço final = item + frete − cupom − cashback (§16), **reaplicado a cada leitura** (`_ofertas_guardadas`) — adicionar cupom e recarregar já muda o preço, sem re-buscar. UI: **escadinha** (base − cupom − cashback = final) por oferta + tela **Carteira**. `OfertaView`/`OfertaRankeada` carregam a decomposição.
+
+**Aberto / próximo:** Serper free-tier varia muito por chamada (1–13 lojas) — o `buscar` acumula as validadas no banco; consistência real pede upgrade do Serper ou 2ª fonte. Gate de capacidade (ex.: geladeira 375L vs 385L passou pra revisão em vez de descartar — revisar extração/normalização de capacidade), unificar "Mercado Livre" × "mercadolivre.com.br", cache de query + contador de créditos, e no front o gráfico de evolução 30 dias (precisa endpoint de histórico) ficam pendentes.
+
+**Gotcha de ambiente:** o servidor lê o banco relativo ao **cwd** — subir o uvicorn de `src/` usa `src/precos.db`; a CLI da raiz usa `./precos.db` (bancos diferentes). Cupom cadastrado pela CLI da raiz não aparece no servidor rodando de `src/`.
+
 ## 1. Problema
 
 Buscar produto exige entender o que o usuário colou. Pré-modelar banco de atributos por categoria (notebook, TV, airfryer, sanduicheira...) não escala e trava quando a categoria não existe.
@@ -88,12 +102,12 @@ Cada erro corrigido na fila "revisar" vira caso no dataset rotulado (PRD §23).
 
 1. ✅ Coletor serper `/shopping` no contrato Coletor + fixtures (feito: `google_shopping.py`).
 2. ✅ Extrator base de título/slug + EAN (feito: `adapters/extratores/`).
-3. **Extrator heurístico**: enriquecer o de título → categoria/marca/part-number/atributos + confiança + testes.
-4. **Portão de part-number** no matcher + casos novos no dataset rotulado.
-5. **Roteador = guarda de especificidade** (tem âncora? senão pede título específico).
-6. **Query pela âncora** (marca+modelo+specs-chave), não pela string inteira.
-7. Cache de query + contador de créditos.
-8. CLI: `buscar "<título>"` mostrando as decisões do matching e o ranking com todas as lojas.
+3. ✅ **Extrator heurístico** + ✅ **Extração por LLM** (8b NVIDIA) como caminho principal, heurística de fallback.
+4. ✅ **Portão de part-number/modelo** no matcher + ✅ **Validador de identidade por IA** (o juiz que decide "mesmo produto?", substitui o gate por categoria na zona ambígua).
+5. ✅ **Roteador = guarda de especificidade** (tem âncora? senão pede título específico).
+6. ✅ **Query pela âncora** (marca+modelo+specs-chave) + ✅ **rede de segurança BR** no coletor (loja renomada entra como vitrine).
+7. ⬜ Cache de query + contador de créditos (Serper varia muito; ainda pendente).
+8. ✅ CLI `buscar` + ✅ API `/api/produtos/{id}/buscar` + ✅ front com ranking, funil e mini-comparação no card.
 
 ## 10. Critérios de aceite
 

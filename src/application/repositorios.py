@@ -1,3 +1,4 @@
+
 """As PORTAS de persistência (§9): o núcleo fala com estas interfaces, nunca com
 SQLite/Supabase direto. Trocar de banco = nova implementação, zero mudança aqui.
 
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from domain.cashback import Cashback
+from domain.cupom import Cupom
 from domain.produto import Produto
 from domain.sku import SKU, SnapshotPreco
 
@@ -67,4 +70,36 @@ class RepositorioSnapshot(Protocol):
         Devolve o snapshot salvo (com `id`), ou None se nada mudou (não gravou).
         Rodar 2x com o mesmo dado não duplica.
         """
+        ...
+
+
+class RepositorioCupom(Protocol):
+    """Busca cupons disponíveis."""
+
+    def ativos_por_loja(self, loja_nome: str) -> list[Cupom]:
+        """Cupons ativos para a loja especificada."""
+        ...
+
+    def todos(self) -> list[tuple[str, Cupom]]:
+        """Todos os cupons cadastrados, agrupados por loja."""
+        ...
+
+    def salvar(self, loja_nome: str, cupom: Cupom) -> None:
+        """Salva ou atualiza um cupom na loja."""
+        ...
+
+
+class RepositorioCashback(Protocol):
+    """Busca cashbacks disponíveis."""
+
+    def ativos_por_loja(self, loja_nome: str) -> list[Cashback]:
+        """Cashbacks ativos para a loja especificada."""
+        ...
+
+    def todos(self) -> list[tuple[str, Cashback]]:
+        """Todos os cashbacks cadastrados, agrupados por loja."""
+        ...
+
+    def salvar(self, loja_nome: str, cashback: Cashback) -> None:
+        """Salva ou atualiza um cashback na loja."""
         ...

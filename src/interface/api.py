@@ -28,6 +28,8 @@ from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
     RepositorioSnapshotSQLite,
+    RepositorioCupomSQLite,
+    RepositorioCashbackSQLite,
     conectar,
 )
 from application.buscar_produto import (
@@ -35,10 +37,12 @@ from application.buscar_produto import (
     OfertaTriada,
     ProdutoInexistente,
     ResultadoBusca,
+    _decompor,
 )
 from application.coletores import Coletor
 from config import Config, carregar_config
-from domain import Produto, SnapshotPreco, calcular_preco_final, dinheiro
+from datetime import date
+from domain import OfertaBruta, Produto, dinheiro
 
 # V1: uma conta fixa (RN16; multiusuário é V6, o gancho conta_id já existe).
 CONTA_PADRAO = 1
@@ -89,6 +93,10 @@ class ProdutoView(BaseModel):
     preco_referencia: str | None = None
     palavras_obrigatorias: list[str] = []
     palavras_proibidas: list[str] = []
+    # Resumo pro card da lista (mini-comparação): melhor preço já encontrado e
+    # quantas lojas. None/0 = "aguardando busca". Só preenchido na listagem.
+    melhor_preco: str | None = None
+    num_lojas: int = 0
 
 
 class OfertaView(BaseModel):
@@ -101,6 +109,11 @@ class OfertaView(BaseModel):
     coletado_em: str | None = None  # quando esse preço foi coletado (ISO)
     # False = preço de vitrine (Google Shopping), não confirmado na página.
     preco_confirmado: bool = True
+    # Escadinha de desconto (§16): base à vista − cupom − cashback = preco_final.
+    # None quando não há esse desconto. Strings pra não perder centavo no JSON.
+    preco_base: str | None = None
+    desconto_cupom: str | None = None
+    desconto_cashback: str | None = None
 
 
 class OfertaTriadaView(BaseModel):
@@ -125,6 +138,29 @@ class ProdutoDetalhe(BaseModel):
     ofertas: list[OfertaView]
     # Só preenchido logo após uma busca (o GET do produto não tem funil a mostrar).
     diagnostico: DiagnosticoView | None = None
+
+
+class CupomView(BaseModel):
+    loja: str
+    codigo: str
+    desconto: str
+    tipo: str
+    valor_min: str
+    validade: str | None
+    primeira_compra: bool
+
+
+class CashbackView(BaseModel):
+    loja: str
+    fonte: str
+    percentual: str
+    teto: str | None
+    condicao: str | None
+
+
+class CarteiraView(BaseModel):
+    cupons: list[CupomView]
+    cashbacks: list[CashbackView]
 
 
 # ---------- Fiação (mesma do CLI) ----------
@@ -184,24 +220,23 @@ def _dinheiro_opcional(valor: str | None) -> Decimal | None:
         raise HTTPException(400, f"preço de referência inválido: {valor!r}") from e
 
 
-def _preco_final_snapshot(snap: SnapshotPreco) -> Decimal:
-    """Preço final à vista do snapshot guardado (§16; V1 sem cupom/cashback)."""
-    return calcular_preco_final(
-        preco=snap.preco,
-        preco_avista=snap.preco_avista,
-        frete=snap.frete,
-        frete_cotado=snap.frete_cotado,
-    )
-
-
 # ---------- Rotas ----------
 
 @app.get("/api/produtos", response_model=list[ProdutoView])
 def listar_produtos() -> list[ProdutoView]:
-    con, _ = _abrir()
+    con, config = _abrir()
     try:
         produtos = RepositorioProdutoSQLite(con).produtos_ativos(CONTA_PADRAO)
-        return [_produto_view(p) for p in produtos]
+        views: list[ProdutoView] = []
+        for p in produtos:
+            view = _produto_view(p)
+            if p.id is not None:
+                ofertas = _ofertas_guardadas(con, p.id, config)  # ordenado: barato 1º
+                if ofertas:
+                    view.melhor_preco = ofertas[0].preco_final
+                    view.num_lojas = len(ofertas)
+            views.append(view)
+        return views
     finally:
         con.close()
 
@@ -274,12 +309,12 @@ def arquivar_produto(produto_id: int) -> None:
 
 @app.get("/api/produtos/{produto_id}", response_model=ProdutoDetalhe)
 def obter_produto(produto_id: int) -> ProdutoDetalhe:
-    con, _ = _abrir()
+    con, config = _abrir()
     try:
         produto = RepositorioProdutoSQLite(con).obter(produto_id, CONTA_PADRAO)
         if produto is None:
             raise HTTPException(404, f"produto {produto_id} não encontrado")
-        ofertas = _ofertas_guardadas(con, produto_id)
+        ofertas = _ofertas_guardadas(con, produto_id, config)
         return ProdutoDetalhe(produto=_produto_view(produto), ofertas=ofertas)
     finally:
         con.close()
@@ -294,17 +329,24 @@ def buscar_agora(produto_id: int) -> ProdutoDetalhe:
             repo_produto=RepositorioProdutoSQLite(con),
             repo_sku=RepositorioSKUSQLite(con),
             repo_snapshot=RepositorioSnapshotSQLite(con),
+            repo_cupom=RepositorioCupomSQLite(con),
+            repo_cashback=RepositorioCashbackSQLite(con),
             classificador=_classificador(config),
         )
         try:
             resultado = asyncio.run(
-                caso.executar(produto_id, CONTA_PADRAO, config.cep_destino)
+                caso.executar(
+                    produto_id, 
+                    CONTA_PADRAO, 
+                    config.cep_destino, 
+                    config.cashback_elegivel
+                )
             )
         except ProdutoInexistente as e:
             raise HTTPException(404, str(e)) from e
         # Lê de volta do banco: mesma forma/ordem do GET, já com o timestamp. O
         # flag "preço confirmado" não é persistido, então vem do ranking (por loja).
-        ofertas = _ofertas_guardadas(con, produto_id)
+        ofertas = _ofertas_guardadas(con, produto_id, config)
         confirmacao = {o.loja: o.preco_confirmado for o in resultado.ranking}
         for oferta in ofertas:
             oferta.preco_confirmado = confirmacao.get(oferta.loja, True)
@@ -334,10 +376,18 @@ def _diagnostico_view(resultado: ResultadoBusca) -> DiagnosticoView:
     )
 
 
-def _ofertas_guardadas(con: sqlite3.Connection, produto_id: int) -> list[OfertaView]:
-    """Ofertas já persistidas (SKU + último snapshot), ordenadas pela mais barata."""
+def _ofertas_guardadas(
+    con: sqlite3.Connection, produto_id: int, config: Config
+) -> list[OfertaView]:
+    """Ofertas persistidas (SKU + último snapshot), com a CARTEIRA aplicada
+    (melhor cupom + melhor cashback) e a escadinha de desconto, ordenadas pela
+    mais barata. Reaplica a carteira a cada leitura — adicionar um cupom e
+    recarregar já reflete no preço, sem re-buscar nas lojas."""
     repo_sku = RepositorioSKUSQLite(con)
     repo_snap = RepositorioSnapshotSQLite(con)
+    repo_cupom = RepositorioCupomSQLite(con)
+    repo_cashback = RepositorioCashbackSQLite(con)
+    hoje = date.today()
     linhas: list[tuple[Decimal, OfertaView]] = []
     for sku in repo_sku.de_produto(produto_id, CONTA_PADRAO):
         if sku.id is None:
@@ -345,15 +395,35 @@ def _ofertas_guardadas(con: sqlite3.Connection, produto_id: int) -> list[OfertaV
         snap = repo_snap.ultimo_snapshot(sku.id, CONTA_PADRAO)
         if snap is None:
             continue
-        final = _preco_final_snapshot(snap)
+        loja = sku.loja_origem or ""
+        oferta = OfertaBruta(
+            titulo=sku.titulo_original,
+            preco=snap.preco,
+            url=sku.url,
+            preco_avista=snap.preco_avista,
+            desconto_pix=snap.desconto_pix,
+            frete=snap.frete,
+            frete_cotado=snap.frete_cotado,
+            em_estoque=snap.em_estoque,
+        )
+        final, base, desc_cupom, desc_cashback = _decompor(
+            oferta,
+            repo_cupom.ativos_por_loja(loja),
+            repo_cashback.ativos_por_loja(loja),
+            hoje,
+            config.cashback_elegivel,
+        )
         linhas.append(
             (
                 final,
                 OfertaView(
-                    loja=sku.loja_origem or "",
+                    loja=loja,
                     titulo=sku.titulo_original,
                     url=sku.url,
                     preco_final=str(final),
+                    preco_base=str(base),
+                    desconto_cupom=str(desc_cupom) if desc_cupom > 0 else None,
+                    desconto_cashback=str(desc_cashback) if desc_cashback > 0 else None,
                     em_estoque=snap.em_estoque,
                     score_match=sku.score_match,
                     coletado_em=snap.coletado_em.isoformat() if snap.coletado_em else None,
@@ -362,3 +432,77 @@ def _ofertas_guardadas(con: sqlite3.Connection, produto_id: int) -> list[OfertaV
         )
     linhas.sort(key=lambda t: t[0])
     return [view for _, view in linhas]
+
+
+@app.get("/api/carteira", response_model=CarteiraView)
+def listar_carteira() -> CarteiraView:
+    con, _ = _abrir()
+    try:
+        repo_cupom = RepositorioCupomSQLite(con)
+        repo_cashback = RepositorioCashbackSQLite(con)
+        
+        cupons = [
+            CupomView(
+                loja=loja,
+                codigo=c.codigo,
+                desconto=str(c.desconto),
+                tipo=c.tipo.value,
+                valor_min=str(c.valor_min),
+                validade=c.validade.isoformat() if c.validade else None,
+                primeira_compra=c.primeira_compra
+            )
+            for loja, c in repo_cupom.todos()
+        ]
+        
+        cashbacks = [
+            CashbackView(
+                loja=loja,
+                fonte=c.fonte,
+                percentual=str(c.percentual),
+                teto=str(c.teto) if c.teto else None,
+                condicao=c.condicao
+            )
+            for loja, c in repo_cashback.todos()
+        ]
+        
+        return CarteiraView(cupons=cupons, cashbacks=cashbacks)
+    finally:
+        con.close()
+
+
+@app.post("/api/carteira/cupom", response_model=CupomView, status_code=201)
+def cadastrar_cupom(dados: CupomView) -> CupomView:
+    from domain.cupom import Cupom, TipoDesconto
+    from datetime import date
+    con, _ = _abrir()
+    try:
+        val = date.fromisoformat(dados.validade) if dados.validade else None
+        c = Cupom(
+            codigo=dados.codigo,
+            desconto=Decimal(dados.desconto),
+            tipo=TipoDesconto(dados.tipo),
+            valor_min=Decimal(dados.valor_min),
+            validade=val,
+            primeira_compra=dados.primeira_compra
+        )
+        RepositorioCupomSQLite(con).salvar(dados.loja, c)
+        return dados
+    finally:
+        con.close()
+
+
+@app.post("/api/carteira/cashback", response_model=CashbackView, status_code=201)
+def cadastrar_cashback(dados: CashbackView) -> CashbackView:
+    from domain.cashback import Cashback
+    con, _ = _abrir()
+    try:
+        c = Cashback(
+            fonte=dados.fonte,
+            percentual=Decimal(dados.percentual),
+            teto=Decimal(dados.teto) if dados.teto else None,
+            condicao=dados.condicao
+        )
+        RepositorioCashbackSQLite(con).salvar(dados.loja, c)
+        return dados
+    finally:
+        con.close()

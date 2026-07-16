@@ -14,6 +14,8 @@ from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
     RepositorioSnapshotSQLite,
+    RepositorioCupomSQLite,
+    RepositorioCashbackSQLite,
     conectar,
 )
 from application.buscar_produto import BuscarProduto, ProdutoInexistente
@@ -99,7 +101,17 @@ def _monta(con, coletores, classificador=None, produto=None):
     repo_sn = RepositorioSnapshotSQLite(con)
     produto = produto or Produto(nome="Echo Dot 5", categoria="eletronicos")
     salvo = repo_p.salvar(produto, CONTA)
-    uc = BuscarProduto(coletores, repo_p, repo_s, repo_sn, classificador=classificador)
+    repo_cupom = RepositorioCupomSQLite(con)
+    repo_cashback = RepositorioCashbackSQLite(con)
+    uc = BuscarProduto(
+        coletores, 
+        repo_p, 
+        repo_s, 
+        repo_sn, 
+        repo_cupom=repo_cupom,
+        repo_cashback=repo_cashback,
+        classificador=classificador
+    )
     return uc, salvo.id, (repo_p, repo_s, repo_sn)
 
 

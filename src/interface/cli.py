@@ -33,6 +33,8 @@ from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
     RepositorioSnapshotSQLite,
+    RepositorioCupomSQLite,
+    RepositorioCashbackSQLite,
     conectar,
 )
 from application.buscar_produto import (
@@ -294,12 +296,19 @@ def buscar(
         repo_produto=RepositorioProdutoSQLite(con),
         repo_sku=RepositorioSKUSQLite(con),
         repo_snapshot=RepositorioSnapshotSQLite(con),
+        repo_cupom=RepositorioCupomSQLite(con),
+        repo_cashback=RepositorioCashbackSQLite(con),
         classificador=classificador,
     )
     try:
         with console.status("[bold]Buscando nas lojas...[/]"):
             resultado = asyncio.run(
-                caso_de_uso.executar(produto_id, CONTA_PADRAO, cep or config.cep_destino)
+                caso_de_uso.executar(
+                    produto_id, 
+                    CONTA_PADRAO, 
+                    cep or config.cep_destino,
+                    config.cashback_elegivel
+                )
             )
     except ProdutoInexistente:
         console.print(f"[red]Produto {produto_id} não encontrado.[/] Veja 'listar'.")
@@ -377,5 +386,55 @@ def _mostrar_funil(resultado: ResultadoBusca) -> None:
         console.print(f"[dim]descartadas por motivo: {resumo}[/]")
 
 
+@app.command()
+def cupom(
+    loja: str = typer.Argument(..., help="Nome da loja (ex: KaBuM!)."),
+    codigo: str = typer.Argument(..., help="Código do cupom."),
+    desconto: str = typer.Argument(..., help="Valor numérico do desconto (ex: 15.00)."),
+    tipo: str = typer.Option("fixo", "--tipo", "-t", help="Tipo: 'fixo' ou 'percentual'."),
+    valor_min: str = typer.Option("0", "--min", help="Valor mínimo para aplicar."),
+    validade: Optional[str] = typer.Option(None, "--validade", "-v", help="Validade (YYYY-MM-DD)."),
+    primeira_compra: bool = typer.Option(False, "--primeira-compra", help="Se é apenas para primeira compra.")
+) -> None:
+    """Cadastra ou atualiza um cupom para uma loja."""
+    from decimal import Decimal
+    from datetime import date
+    from domain.cupom import Cupom, TipoDesconto
+    
+    con, _ = _abrir()
+    val = date.fromisoformat(validade) if validade else None
+    c = Cupom(
+        codigo=codigo,
+        desconto=Decimal(desconto),
+        tipo=TipoDesconto(tipo.lower()),
+        valor_min=Decimal(valor_min),
+        validade=val,
+        primeira_compra=primeira_compra
+    )
+    RepositorioCupomSQLite(con).salvar(loja, c)
+    console.print(f"[green]✓[/] Cupom [bold]{codigo}[/] salvo para a loja [bold]{loja}[/].")
+
+
+@app.command()
+def cashback(
+    loja: str = typer.Argument(..., help="Nome da loja (ex: KaBuM!)."),
+    fonte: str = typer.Argument(..., help="Fonte do cashback (ex: banco_inter, meliuz)."),
+    percentual: str = typer.Argument(..., help="Percentual (ex: 5.0)."),
+    teto: Optional[str] = typer.Option(None, "--teto", help="Teto máximo em reais."),
+    condicao: Optional[str] = typer.Option(None, "--condicao", "-c", help="Condição (ex: inter).")
+) -> None:
+    """Cadastra ou atualiza um cashback para uma loja."""
+    from decimal import Decimal
+    from domain.cashback import Cashback
+    
+    con, _ = _abrir()
+    c = Cashback(
+        fonte=fonte,
+        percentual=Decimal(percentual),
+        teto=Decimal(teto) if teto else None,
+        condicao=condicao
+    )
+    RepositorioCashbackSQLite(con).salvar(loja, c)
+    console.print(f"[green]✓[/] Cashback de [bold]{fonte}[/] salvo para a loja [bold]{loja}[/].")
 if __name__ == "__main__":
     app()

@@ -28,6 +28,11 @@ export const api = {
     const resp = await fetch(`${BASE}/api/produtos/${id}`, { method: "DELETE" });
     if (!resp.ok) throw new Error(`API ${resp.status}`);
   },
+  listarCarteira: () => json("/api/carteira"),
+  cadastrarCupom: (dados) =>
+    json("/api/carteira/cupom", { method: "POST", body: JSON.stringify(dados) }),
+  cadastrarCashback: (dados) =>
+    json("/api/carteira/cashback", { method: "POST", body: JSON.stringify(dados) }),
 };
 
 export function reais(valor) {

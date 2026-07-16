@@ -24,6 +24,8 @@ from application.repositorios import AcessoForaDaConta
 from domain.dinheiro import dinheiro
 from domain.produto import Produto
 from domain.sku import SKU, SnapshotPreco
+from domain.cupom import Cupom
+from domain.cashback import Cashback
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS produto (
@@ -67,6 +69,28 @@ CREATE TABLE IF NOT EXISTS snapshot_preco (
 );
 CREATE INDEX IF NOT EXISTS ix_produto_conta_status ON produto (conta_id, status);
 CREATE INDEX IF NOT EXISTS ix_snapshot_sku_data ON snapshot_preco (sku_id, coletado_em);
+
+CREATE TABLE IF NOT EXISTS cupom (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loja_origem TEXT NOT NULL,
+    codigo TEXT NOT NULL,
+    desconto TEXT NOT NULL,
+    tipo TEXT NOT NULL,
+    valor_min TEXT NOT NULL DEFAULT '0',
+    validade TEXT,
+    primeira_compra INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (loja_origem, codigo)
+);
+
+CREATE TABLE IF NOT EXISTS cashback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loja_origem TEXT NOT NULL,
+    fonte TEXT NOT NULL,
+    percentual TEXT NOT NULL,
+    teto TEXT,
+    condicao TEXT,
+    UNIQUE (loja_origem, fonte)
+);
 """
 
 # Campos que definem "a oferta mudou" (RN11). `coletado_em` NÃO entra: o
@@ -352,3 +376,98 @@ def _exige_sku_da_conta(con: sqlite3.Connection, sku_id: int, conta_id: int) -> 
     ).fetchone()
     if achou is None:
         raise AcessoForaDaConta("SKU não pertence à conta")
+
+
+# ---------- Cupom e Cashback ----------
+
+class RepositorioCupomSQLite:
+    def __init__(self, conexao: sqlite3.Connection) -> None:
+        self._con = conexao
+
+    def ativos_por_loja(self, loja_nome: str) -> list[Cupom]:
+        linhas = self._con.execute(
+            "SELECT * FROM cupom WHERE loja_origem = ?",
+            (loja_nome,),
+        ).fetchall()
+        return [_linha_para_cupom(linha) for linha in linhas]
+
+    def todos(self) -> list[tuple[str, Cupom]]:
+        linhas = self._con.execute("SELECT * FROM cupom ORDER BY loja_origem").fetchall()
+        return [(linha["loja_origem"], _linha_para_cupom(linha)) for linha in linhas]
+
+    def salvar(self, loja_nome: str, cupom: Cupom) -> None:
+        self._con.execute(
+            """INSERT INTO cupom
+                 (loja_origem, codigo, desconto, tipo, valor_min, validade, primeira_compra)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (loja_origem, codigo) DO UPDATE SET
+                 desconto = excluded.desconto,
+                 tipo = excluded.tipo,
+                 valor_min = excluded.valor_min,
+                 validade = excluded.validade,
+                 primeira_compra = excluded.primeira_compra""",
+            (
+                loja_nome,
+                cupom.codigo,
+                _txt(cupom.desconto),
+                cupom.tipo.value,
+                _txt(cupom.valor_min),
+                cupom.validade.isoformat() if cupom.validade else None,
+                int(cupom.primeira_compra),
+            ),
+        )
+        self._con.commit()
+
+def _linha_para_cupom(linha: sqlite3.Row) -> Cupom:
+    from domain.cupom import TipoDesconto
+    validade_str = linha["validade"]
+    return Cupom(
+        codigo=linha["codigo"],
+        desconto=_dec(linha["desconto"]) or Decimal("0"),
+        tipo=TipoDesconto(linha["tipo"]),
+        valor_min=_dec(linha["valor_min"]) or Decimal("0"),
+        validade=datetime.fromisoformat(validade_str).date() if validade_str else None,
+        primeira_compra=bool(linha["primeira_compra"]),
+    )
+
+class RepositorioCashbackSQLite:
+    def __init__(self, conexao: sqlite3.Connection) -> None:
+        self._con = conexao
+
+    def ativos_por_loja(self, loja_nome: str) -> list[Cashback]:
+        linhas = self._con.execute(
+            "SELECT * FROM cashback WHERE loja_origem = ?",
+            (loja_nome,),
+        ).fetchall()
+        return [_linha_para_cashback(linha) for linha in linhas]
+
+    def todos(self) -> list[tuple[str, Cashback]]:
+        linhas = self._con.execute("SELECT * FROM cashback ORDER BY loja_origem").fetchall()
+        return [(linha["loja_origem"], _linha_para_cashback(linha)) for linha in linhas]
+
+    def salvar(self, loja_nome: str, cashback: Cashback) -> None:
+        self._con.execute(
+            """INSERT INTO cashback
+                 (loja_origem, fonte, percentual, teto, condicao)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT (loja_origem, fonte) DO UPDATE SET
+                 percentual = excluded.percentual,
+                 teto = excluded.teto,
+                 condicao = excluded.condicao""",
+            (
+                loja_nome,
+                cashback.fonte,
+                _txt(cashback.percentual),
+                _txt(cashback.teto),
+                cashback.condicao,
+            ),
+        )
+        self._con.commit()
+
+def _linha_para_cashback(linha: sqlite3.Row) -> Cashback:
+    return Cashback(
+        fonte=linha["fonte"],
+        percentual=_dec(linha["percentual"]) or Decimal("0"),
+        teto=_dec(linha["teto"]),
+        condicao=linha["condicao"]
+    )

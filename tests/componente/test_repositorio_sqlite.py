@@ -13,6 +13,8 @@ from adapters.repositorios.sqlite import (
     RepositorioProdutoSQLite,
     RepositorioSKUSQLite,
     RepositorioSnapshotSQLite,
+    RepositorioCupomSQLite,
+    RepositorioCashbackSQLite,
     conectar,
 )
 from application.repositorios import AcessoForaDaConta
@@ -160,3 +162,66 @@ def _prepara_sku(con) -> SKU:
             score_match=0.9),
         CONTA,
     )
+
+
+# ---------- Cupom e Cashback ----------
+
+def test_salva_e_le_cupom_preservando_tipos(con):
+    from domain.cupom import Cupom, TipoDesconto
+    from datetime import date
+    repo = RepositorioCupomSQLite(con)
+    cupom = Cupom(
+        codigo="BEMVINDO",
+        desconto=Decimal("15.00"),
+        tipo=TipoDesconto.PERCENTUAL,
+        valor_min=Decimal("100.00"),
+        validade=date(2026, 12, 31),
+        primeira_compra=True
+    )
+    repo.salvar("KaBuM!", cupom)
+    
+    ativos = repo.ativos_por_loja("KaBuM!")
+    assert len(ativos) == 1
+    lido = ativos[0]
+    
+    assert lido.codigo == "BEMVINDO"
+    assert lido.desconto == Decimal("15.00")
+    assert lido.tipo == TipoDesconto.PERCENTUAL
+    assert lido.valor_min == Decimal("100.00")
+    assert lido.validade == date(2026, 12, 31)
+    assert lido.primeira_compra is True
+
+def test_atualiza_cupom_existente_na_mesma_loja(con):
+    from domain.cupom import Cupom, TipoDesconto
+    repo = RepositorioCupomSQLite(con)
+    c1 = Cupom(codigo="DESCONTO", desconto=Decimal("10.00"), tipo=TipoDesconto.FIXO)
+    repo.salvar("Amazon", c1)
+    
+    # Atualiza o mesmo cupom
+    c2 = Cupom(codigo="DESCONTO", desconto=Decimal("20.00"), tipo=TipoDesconto.FIXO)
+    repo.salvar("Amazon", c2)
+    
+    ativos = repo.ativos_por_loja("Amazon")
+    assert len(ativos) == 1
+    assert ativos[0].desconto == Decimal("20.00")
+
+def test_salva_e_le_cashback(con):
+    from domain.cashback import Cashback
+    repo = RepositorioCashbackSQLite(con)
+    cashback = Cashback(
+        fonte="inter",
+        percentual=Decimal("5.0"),
+        teto=Decimal("50.00"),
+        condicao="cliente_inter"
+    )
+    repo.salvar("KaBuM!", cashback)
+    
+    ativos = repo.ativos_por_loja("KaBuM!")
+    assert len(ativos) == 1
+    lido = ativos[0]
+    
+    assert lido.fonte == "inter"
+    assert lido.percentual == Decimal("5.0")
+    assert lido.teto == Decimal("50.00")
+    assert lido.condicao == "cliente_inter"
+

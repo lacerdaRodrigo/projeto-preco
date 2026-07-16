@@ -121,28 +121,29 @@ export default function Dashboard() {
               <div className="linha1">
                 <span className="loja">{o.loja}</span>
                 {ehMenor && <span className="melhor">● mais barato</span>}
-                {!o.em_estoque && (
-                  <span className="badge" style={{ color: "var(--vermelho)" }}>fora de estoque</span>
-                )}
+                {!o.em_estoque && <span className="badge alerta">fora de estoque</span>}
                 <span className="preco">{reais(preco)}</span>
               </div>
-              <div className="titulo">
-                {o.titulo}
-                {typeof o.score_match === "number" && (
-                  <span style={{ marginLeft: 8, opacity: 0.7 }}>
-                    · match {o.score_match.toFixed(2)}
+              <div className="titulo" style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                <span>{o.titulo}</span>
+                {o.preco_confirmado === false ? (
+                  <span className="chip vitrine" title="Preço listado no Google Shopping; pode variar na loja.">
+                    preço de vitrine
+                  </span>
+                ) : (
+                  <span className="chip confirmado" title="Preço confirmado na página da loja.">
+                    confirmado
                   </span>
                 )}
-                {o.preco_confirmado === false && (
-                  <span style={{ marginLeft: 8, opacity: 0.7 }} title="Preço listado no Google Shopping; pode variar na loja.">
-                    · preço de vitrine
-                  </span>
+                {typeof o.score_match === "number" && (
+                  <span className="chip neutro">match {o.score_match.toFixed(2)}</span>
                 )}
               </div>
               <div className="barra">
                 <span style={{ width: `${largura}%`, background: abaixoRef ? "var(--verde)" : undefined }} />
                 {refPct !== null && <i className="ref-linha" style={{ left: `${refPct}%` }} />}
               </div>
+              <Escadinha o={o} />
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <a className="link-loja" href={o.url} target="_blank" rel="noreferrer">abrir na loja ↗</a>
                 {o.coletado_em && <span className="titulo">coletado {quando(o.coletado_em)}</span>}
@@ -154,6 +155,23 @@ export default function Dashboard() {
 
       <Funil diagnostico={dados.diagnostico} />
     </main>
+  );
+}
+
+// A escadinha de desconto (§16): base à vista − cupom − cashback = preço final.
+// Só aparece quando a carteira realmente mexeu no preço — senão o preço sozinho basta.
+function Escadinha({ o }) {
+  const cupom = o.desconto_cupom ? Number(o.desconto_cupom) : 0;
+  const cashback = o.desconto_cashback ? Number(o.desconto_cashback) : 0;
+  if (cupom <= 0 && cashback <= 0) return null;
+  const base = o.preco_base ? Number(o.preco_base) : null;
+  return (
+    <div className="escadinha" title="Preço final = base à vista − cupom − cashback">
+      {base !== null && <span className="deg">{reais(base)}</span>}
+      {cupom > 0 && <span className="deg desc">− cupom {reais(cupom)}</span>}
+      {cashback > 0 && <span className="deg desc">− cashback {reais(cashback)}</span>}
+      <span className="deg final">= {reais(o.preco_final)}</span>
+    </div>
   );
 }
 
